@@ -1,0 +1,3281 @@
+---
+title: "CRELES genotyping QC: v3"
+date: "January 2022"
+author: "Paola Arguello Pascualli"
+output:
+  html_document:
+    toc: true
+    toc_depth: 4
+    toc_float: true
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+![Overall genotyping pipeline](./CRELES_genotyping_QC_pipeline.png)
+
+# Pre-cleaning 
+## SNP pre-cleaning
+
+Taken from the MEGA task force pipeline shared by Jessica Dennis (~/KoborLab/kobor_space/ppascualli/Files/CRELES/MEGA_QC_Task_Force.docx) based on the Ricopili QC pipeline (https://sites.google.com/a/broadinstitute.org/ricopili/). 
+Starting with plink files downloaded from GenomeStudio using the  *PLINK Input Report Plug-in v2.1.4* after QC performed by *Nicole Gladish* on her CRELES pre-imputing Genotyping QC. 
+
+### 1. SNP call rate < 95%
+
+Using plink 1.9 (--geno 0.05) command, remove SNPs with a call rate lower than 95%. This avoids to have potential wrong calls included into further analysis.
+
+*0 variants removed*
+
+### 2. MAF < 1% 
+
+The minor allele frequency (MAF) reflect the less common allele frequency across the population. They tend to reflect rare alleles, however, its accuracy is highly dependant on sample size. If there is not enough samples to back up the rare-allele, is hard to determine if it is a true rare-allele and not result of sequencing errors.  Here we set a temporary low filter of 1% to discard samples, using plink 1.9 (--maf 0.01) command. 
+
+*214 variants removed*
+
+## Sample pre-cleaning
+### 3. Filter individual call rate < 98%
+
+Filter out all samples with missing call rates exceeding the 98%, due to missingness. This step was performed using plink 1.9 command (--mind 0.02). 
+
+*0 samples removed*
+
+
+```{bash, eval=FALSE}
+
+## First, we change to the working directory:
+cd  ~/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC
+
+~/KoborLab/kobor_space/ppascualli/Programs/plink --map ../CRELES_GSA.map --ped ../CRELES_GSA.ped --geno 0.05 --maf 0.01 --mind 0.02 --make-bed --het --out CRELES_pc1
+
+
+```
+
+
+### 4. Sex and Array discrepancies
+Removing 10 samples that Nicole Gladish identified as mismatched between GSA and EPIC arrays based on GenomeStudio sex inferences, included in the *CRELES_bad-samples.txt* and shown below.
+
+Important: (UBC9-322, could not be removed, not found on the file)
+
+
+```{r, eval=TRUE, echo=FALSE}
+bad.samples <- read.table("~/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/CRELES_bad-samples.txt", header = TRUE)
+library(knitr)
+library(kableExtra)
+kable(bad.samples) %>%
+  kable_styling(bootstrap_options = "striped", full_width = F, position = "center")
+
+```
+
+```{bash, eval=FALSE}
+~/KoborLab/kobor_space/ppascualli/Programs/plink --bfile CRELES_pc1 --remove CRELES_bad-samples.txt --make-bed --out CRELES_pc2
+```
+
+*9 samples removed*
+
+### 5. |Fhet| > 0.2 (- -het + Rscript)
+
+The heterozygosity frequency, allows for individuals who deviate from the heterozygosity rate to be removed. "The heterozygosity rate of an individual is the proportion of heterozygous genotypes. High levels of heterozygosity within an individual might be an indication of low sample quality whereas low levels of heterozygosity may be due to inbreeding." *(Marees, et al. 2018)*
+
+First, based on the output file generated from steps 1-3 with the (-- het) command, we load the file onto R and output a table with all the samples with a absolute value of Fhet above 0.2. 
+
+```{r, eval=FALSE}
+#----R mini script----#
+## Output stored in plink.het, which is then loaded into R where the |Fhet| > 0.2 is ran:
+CRELES.het <- read.table("~/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/MEGAQC/CRELES_pc1.het", header=TRUE)
+
+write.table(x = CRELES.het[abs(CRELES.het$F)>0.2, c(1:2)],file = "~/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/CRELES_Fhet.txt",quote = FALSE, sep = "\t", row.names = FALSE, col.names = FALSE)
+# --------------------#
+```
+
+Resulting in two samples (X2236.R2 and X86) that should be removed, using the created *CRELES_Fhet.txt* file. Additionally, we add manually another sample that has no sex: (9169-R2) and we remove them using plink, as outlined below. 
+
+```{bash, eval=FALSE}
+
+~/KoborLab/kobor_space/ppascualli/Programs/plink --bfile CRELES_pc2 --remove CRELES_Fhet.txt --make-bed --out CRELES_pc3
+
+```
+
+*3 samples removed*
+
+
+## Summary
+
+```{r, eval=TRUE, echo=TRUE,results='hide', message=FALSE, warning=FALSE}
+df<-data.frame(sample_num_remaining=c(504,504,504,495, 492), filter=c("SNP call rate < 95%", "MAF < 1%", "Individual call rate < 98%","Array & Sex discrepancies", "|Fhet| > 0.2"))
+df$sample_num_lost<-c(0,sapply(2:nrow(df), function(x) df$sample_num_remaining[x-1]-df$sample_num_remaining[x]))
+
+df$filter<-factor(df$filter, rev(df$filter))
+library(ggplot2)
+library(formattable)
+library(ggpubr)
+samples <- ggplot(df)+
+  geom_bar(aes(filter,-sample_num_remaining), stat="identity", fill="darkolivegreen3", color="darkolivegreen3", alpha = 0.5)+
+  geom_bar(aes(filter,sample_num_lost), stat="identity",fill="firebrick2", color="firebrick2", alpha = 0.5)+
+  geom_text(aes(x=filter, y=-min(sample_num_remaining)/2,  label=(sample_num_remaining)), size = 5)+
+  geom_text(aes(x=filter, y=max(sample_num_lost)*3,  label=(sample_num_lost)), size = 5)+
+  geom_hline(yintercept=0)+
+  coord_flip()+theme_bw()+ylab("")+xlab("")+ggtitle("Samples")+
+  theme(axis.line = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text.x = element_blank(),
+        axis.text.y = element_text(colour = "grey20", size=15),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        plot.title = element_text(face="bold", size = 15, hjust = 0.5)) +
+  scale_x_discrete(position = "top") 
+
+df<-data.frame(sample_num_remaining=c(460951,460951-214,460951-214,460951-214, 460951-214), 
+               filter=c("SNP call rate < 95%", "MAF < 1%", "Individual call rate < 98%","Array & Sex discrepancies", "|Fhet| > 0.2"))
+df$sample_num_lost<-c(0,sapply(2:nrow(df), function(x) df$sample_num_remaining[x-1]-df$sample_num_remaining[x]))
+
+df$filter<-factor(df$filter, rev(df$filter))
+
+variants <- ggplot(df)+
+  geom_bar(aes(filter,-sample_num_remaining), stat="identity", fill="darkolivegreen3", color="darkolivegreen3", alpha = 0.5)+
+  geom_bar(aes(filter,sample_num_lost), stat="identity",fill="firebrick2", color="firebrick2", alpha = 0.5)+
+  geom_text(aes(x=filter, y=-min(sample_num_remaining)/2,  label=comma(sample_num_remaining,digits = 0)), size = 5)+
+  geom_text(aes(x=filter, y=max(sample_num_lost)*150,  label=((sample_num_lost))), size = 5)+
+  geom_hline(yintercept=0)+
+  coord_flip()+theme_bw()+ylab("")+xlab("")+ggtitle("Variants")+
+  theme(axis.line = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text.x = element_blank(),
+        axis.text.y = element_text(colour = "grey20", size=15),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        plot.title = element_text(face="bold", size = 15, hjust = 0.5)) +
+  scale_x_discrete(position = "top") 
+
+ggarrange(samples, variants, ncol=1, nrow=2)
+
+```
+
+
+# Population stratification investigation
+
+UPDATE NOTE: After talking to Carmina Barjon from the Moreno Lab, I decided the best moment to do the global ancestry investigation is after the pre-imputation QC. This step is merely to identify is there are significant differences between the cohort that justify stratification for further analysis, which after analyzing the PCA plot there isn't.
+
+Because CRELES is an ancestrally diverse cohort, in order to ensure the best quality filtering we need to know how diverse the individuals are. Knowing the ancestral populations will ensure that the most closely related population is used for further imputation steps. 
+
+## Informative variants - specific QC
+
+*Starting with 460,737 *
+
+#### 1. Remove sex chromosomes 
+
+For simplicity and since the XY and MT chromosomes won't interfere with the infered ancestry on the PCA, they are removed from CRELES, using plink 1.9 command (--not-chr X,Y,XY,25,MT), to avoid any potential issues associated to haploidies and different annotations. 
+
+```{bash, eval=FALSE}
+~/KoborLab/kobor_space/ppascualli/Programs/plink --bfile ../CRELES_pc3 --not-chr X,Y,XY,25,MT, --make-bed --out 1M_CRELES
+```
+
+*446,728 variants remaining* 
+*14,009 variants removed*
+
+#### 2. MAF > 5% 
+
+We want the most informative variants to show the stratification between populations, therefore we strigthen the MAF threshold using the plink 1.9 command (--maf 0.05). 
+
+```{bash, eval=FALSE}
+~/KoborLab/kobor_space/ppascualli/Programs/plink --bfile 1M_CRELES --maf 0.05 --make-bed --out 2M_CRELES
+```
+
+*148,360 variants removed*
+*298,368 remaining*
+
+#### 3. Filter strand ambiguous SNPs (AT/GC)
+
+*A T/G SNPs is non-ambiguous as its complement on the other strand is A/C. However, G/C and T/A variants are ambiguous or cryptic as their complementary alleles are C/G and A/T, respectively. This ambiguity means it is more difficult to detect and resolve strand issues for these SNPs* [(Deelen, et al., 2014)](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC4307387/)
+, therefore we removed them to avoid potential issues. 
+
+
+```{bash, eval=FALSE}
+
+grep --perl-regexp "A\tT" 2M_CRELES.bim > 3M_ATsnps.txt
+grep --perl-regexp "G\tC" 2M_CRELES.bim > 3M_GCsnps.txt
+cat 3M_ATsnps.txt 3M_GCsnps.txt > 3M_ambiguous_snps.txt
+
+~/KoborLab/kobor_space/ppascualli/Programs/plink \
+--bfile 2M_CRELES \
+--exclude 3M_ambiguous_snps.txt \
+--make-bed \
+--out 3M_CRELES
+
+```
+
+*297,631 remaining*
+*737 variants removed*
+
+#### 4. Filter MHC region and long-range LD 
+
+Because high LD regions might give redundancy to the PCA, we removed high LD regions to allow for the most informative regions to be set apart and used. The regions were taken from: https://genome.sph.umich.edu/wiki/Regions_of_high_linkage_disequilibrium_(LD) and the knownly Major Histocompatibility Complex (MHC) was added to the list with its genomic coordinates (chr6, 25-35Mb).
+
+```{bash, eval=FALSE}
+
+~/KoborLab/kobor_space/ppascualli/Programs/plink2 \
+--bfile 3M_CRELES \
+--exclude range ~/KoborLab/kobor_space/ppascualli/Files/CRELES/genotyping_references/high-LD-regions-hg19-GRCh37.txt \
+--make-bed \
+--out 4M_CRELES
+
+```
+
+*9,917 variants excluded*
+*287,714 / 297,631 remaining*
+
+#### 5. LD pruning 
+
+Same as before, to reduce redundancy as much as possible we perform two rounds of LD prunning with plink 1.9 (--indep-pairwise 200 100 0.2).
+
+```{bash, eval=FALSE}
+
+## First pruning round: -------------
+~/KoborLab/kobor_space/ppascualli/Programs/plink2 \
+--bfile 4M_CRELES \
+--indep-pairwise 200 100 0.2 \
+--out 5M_CRELES_p1
+# 188,031/287,714 variants removed
+
+## Now we create the bfiles containing only the prunned variants (1)
+~/KoborLab/kobor_space/ppascualli/Programs/plink2 \
+--bfile 4M_CRELES \
+--extract 5M_CRELES_p1.prune.in \
+--make-bed \
+--out 5M_CRELES_p1.pruned
+## 99,683 variants remaining
+
+## Second pruning round: --------------
+~/KoborLab/kobor_space/ppascualli/Programs/plink2 \
+--bfile  5M_CRELES_p1.pruned \
+--indep-pairwise 200 100 0.2 \
+--out 5M_CRELES_p2
+## 67/99683 variants removed
+
+## Now we create the bfiles containing only the prunned variants (2)
+~/KoborLab/kobor_space/ppascualli/Programs/plink2 \
+--bfile 5M_CRELES_p1.pruned \
+--extract 5M_CRELES_p2.prune.in \
+--make-bed \
+--out 5M_CRELES_p2.pruned
+```
+
+*99,616 variants remaining*
+
+#### Summary 
+```{r}
+df<-data.frame(sample_num_remaining=c(460737,446728,298368,297631,287714, 99616), 
+               filter=c("CRELES pre-QC","Remove sex chr", "MAF 5%", "Strand ambiguous SNPs", "High LD regions", "LD prunning" ))
+df$sample_num_lost<-c(0,sapply(2:nrow(df), function(x) df$sample_num_remaining[x-1]-df$sample_num_remaining[x]))
+
+df$filter<-factor(df$filter, rev(df$filter))
+
+ggplot(df)+
+  geom_bar(aes(filter,-sample_num_remaining), stat="identity", fill="darkolivegreen3", color="darkolivegreen3", alpha = 0.5)+
+  geom_bar(aes(filter,sample_num_lost), stat="identity",fill="firebrick2", color="firebrick2", alpha = 0.5)+
+  geom_text(aes(x=filter, y=-min(sample_num_remaining),  label=comma(sample_num_remaining,digits = 0)), size = 5)+
+  geom_text(aes(x=filter, y=max(sample_num_lost)/1.5,  label=(comma(sample_num_lost, digits = 0))), size = 5)+
+  geom_hline(yintercept=0)+
+  coord_flip()+theme_bw()+ylab("")+xlab("")+ggtitle("CRELES, PCA-specific QC")+
+  theme(axis.line = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text.x = element_blank(),
+        axis.text.y = element_text(colour = "grey20", size=15),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        plot.title = element_text(face="bold", size = 15, hjust = 0.5)) +
+  scale_x_discrete(position = "top") 
+```
+
+
+## PCA analysis: define ancestry groups
+
+The White paper for the Vanderbilt data QC suggests a PCA investigation before going into downstream analysis given that some of the following steps should be performed within ancestries. Then, PCA can be used to stratify ancestrally diverse cohorts. In order to do this we need to: 
+
+0. Merge your data with 1KGP samples
+
+1. Run the PCA with the 1KGP samples: EU, YRI and CHB
+
+2. Define Ancestry cluster boundaries based on proportions form center of mass of one cluster to another cluster. 
+
+### 0. Merging CRELES with 1KGP
+
+a. Filtering the reference data (1KGP) for the same SNP set as in CRELES
+
+First we need to get the files of 1KGP and extract the SNPs that match the CRELES SNP subset that was the result of the last step of the PCA-specific QC. The 
+1KGP data files and information more about the project can be found here: https://www.cog-genomics.org/plink/2.0/resources#1kg_phase3
+
+```{bash, eval=FALSE}
+#____________________________________________________________________
+
+###------- Downloading the reference data - 1KGP ------------ ###
+#_____________________________________________________________________
+
+wget https://www.dropbox.com/s/afvvf1e15gqzsqo/all_phase3.pgen.zst?dl=1
+mv 'all_phase3.pgen.zst?dl=1' all_phase3.pgen.zst
+./plink2 --zst-decompress all_phase3.pgen.zst > all_phase3.pgen
+
+wget https://www.dropbox.com/s/op9osq6luy3pjg8/all_phase3.pvar.zst?dl=1
+mv 'all_phase3.pvar.zst?dl=1' all_phase3.pvar.zst
+
+wget https://www.dropbox.com/s/yozrzsdrwqej63q/phase3_corrected.psam?dl=1
+mv 'phase3_corrected.psam?dl=1' all_phase3.psam
+
+## Convert 1KGP data to plink binary format (Run on server):
+../plink2 --pfile all_phase3 vzs --max-alleles 2 --make-bed --out all_phase3
+
+
+~/KoborLab/kobor_space/ppascualli/Programs/plink2  \
+--bfile ~/KoborLab/kobor_space/ppascualli/Files/CRELES/genotyping_references/1KGP/1KGP \
+--extract ../5M_CRELES_p2.prune.in \
+--make-bed \
+--out 8_KGP.pruned
+
+```
+
+*76,021 / 84,358,431 variants remaining*
+*2,504 samples*
+
+b. Updating naming convention
+
+We need to make sure to have the same naming convention in 1KGP and CRELES before merging the files with PLINK, if this is not done we could misinterpret the results by having SNPs incorrectly assigned to a location.
+
+```{bash, eval=FALSE}
+## Checking and correcting possible chromosome mismatches:
+awk 'BEGIN {OFS="\t"} FNR==NR {a[$2]=$1; next} ($2 in a && a[$2] != $1) {print a[$2],$2}' ../5M_CRELES_p2.pruned.bim 8_KGP.pruned.bim \
+| sed -n '/^[XY]/!p' > 9M_KGP.toUpdateChr
+
+## NO chromosome potential mismatches, skipping next step...
+
+## Creating the plink files:
+../../programs/plink \
+--bfile 8_KGP.pruned \
+--update-chr 9M_KGP.toUpdateChr 1 2 \
+--make-bed \
+--out 9M_KGP.updatedChr
+```
+
+c. Correct possible mismatches 
+
+Before merging, we need to ensure that all the variants match in name, position and strand between CRELES and 1KGP.
+
+```{bash, eval=FALSE}
+## Possible position mismatches:
+awk 'BEGIN {OFS="\t"} FNR==NR {a[$2]=$4; next} \
+($2 in a && a[$2] != $4) {print a[$2],$2}' ../5M_CRELES_p2.pruned.bim 8_KGP.pruned.bim > 10M_KGP.toUpdatePos
+#NOTE: Only 5 possible position mismatches
+
+## Possible allele flips: 
+awk 'BEGIN {OFS="\t"} FNR==NR {a[$1$2$4]=$5$6; next} \
+($1$2$4 in a && a[$1$2$4] != $5$6 && a[$1$2$4] != $6$5) {print $2}' \
+../5M_CRELES_p2.pruned.bim 8_KGP.pruned.bim > 10M_KGP.toFlip
+#NOTE: 38,147 possible allele flips
+
+## Update posistions and flip alleles
+~/KoborLab/kobor_space/ppascualli/Programs/plink \
+--bfile 8_KGP.pruned \
+--update-map 10M_KGP.toUpdatePos 1 2 \
+--flip 10M_KGP.toFlip \
+--make-bed \
+--out 10M_KGP.flipped
+
+```
+
+*NOTE: 5 values updated, 38147 SNPs flipped.*
+*76,021 variants remaining*
+
+d. Remove allele mismatches
+
+Alleles that do not match after allele flipping, should be identified and removed from the reference dataset, as shown by [Hannah Myer, 2019](https://cran.r-project.org/web/packages/plinkQC/vignettes/AncestryCheck.pdf)
+
+```{bash, eval=FALSE}
+awk 'BEGIN {OFS="\t"} FNR==NR {a[$1$2$4]=$5$6; next} \
+($1$2$4 in a && a[$1$2$4] != $5$6 && a[$1$2$4] != $6$5) {print $2}' \
+../5M_CRELES_p2.pruned.bim 10M_KGP.flipped.bim > 11M_KGP.mismatch 
+# 9 possible allele mismatches
+
+~/KoborLab/kobor_space/ppascualli/Programs/plink \
+--bfile 10M_KGP.flipped \
+--exclude 11M_KGP.mismatch  \
+--make-bed \
+--out 11M_KGP.clean
+```
+
+*76012 variants and 2504 people pass filters and QC :-)*
+
+e. Summary of the remaining 1KGP variants after overlap
+
+```{r}
+df<-data.frame(sample_num_remaining=c(84358431, 76021, 76012), 
+               filter=c("1KGP variants","CRELES overlap", "Allele mismatches" ))
+df$sample_num_lost<-c(0,sapply(2:nrow(df), function(x) df$sample_num_remaining[x-1]-df$sample_num_remaining[x]))
+
+df$filter<-factor(df$filter, rev(df$filter))
+
+ggplot(df)+
+  geom_bar(aes(filter,-sample_num_remaining), stat="identity", fill="darkolivegreen3", color="darkolivegreen3", alpha = 0.5)+
+  geom_bar(aes(filter,sample_num_lost), stat="identity",fill="firebrick2", color="firebrick2", alpha = 0.5)+
+  geom_text(aes(x=filter, y=-min(sample_num_remaining),  label=comma(sample_num_remaining,digits = 0)), size = 5)+
+  geom_text(aes(x=filter, y=max(sample_num_lost)/1.5,  label=(comma(sample_num_lost, digits = 0))), size = 5)+
+  geom_hline(yintercept=0)+
+  coord_flip()+theme_bw()+ylab("")+xlab("")+ggtitle("1KGP, PCA-specific QC")+
+  theme(axis.line = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text.x = element_blank(),
+        axis.text.y = element_text(colour = "grey20", size=15),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        plot.title = element_text(face="bold", size = 15, hjust = 0.5)) +
+  scale_x_discrete(position = "top") 
+```
+
+
+
+f. Merging study genotypes and reference data:
+
+Finally, now that we have make sure that everything matches and is in the correct order we can merge the two datasets.
+
+```{bash, eval=FALSE}
+~/KoborLab/kobor_space/ppascualli/Programs/plink \
+--bfile ../5M_CRELES_p2.pruned \
+--bmerge 11M_KGP.clean.bed 11M_KGP.clean.bim 11M_KGP.clean.fam \
+--make-bed \
+--out 12M_CRELES.merge.1KGP
+```
+
+Venn diagram: Shows overlap between the CRELES and 1KGP datasets
+
+```{r, eval=TRUE, echo=FALSE,results='hide', message=FALSE, warning=FALSE}
+library(VennDiagram)
+grid.newpage()      
+draw.pairwise.venn(460737-76012, 84358431-76012, 76012, 
+                   category = c("CRELES", "1KGP"), 
+                   lty = rep("blank",2), 
+                   fill = c("light blue", "pink"),
+                   alpha = rep(0.5, 2), 
+                   cat.pos = c(0, 0), cat.dist = rep(0.025, 2))
+
+```
+
+
+g. Sanity Check
+
+Plotting the MAF of the merged dataset to detect any major problem in the allele orientation when merging both datasets.
+
+```{r, comment=FALSE}
+
+CRELES.maf <- read.table("/home/BCRICWH.LAN/Paola.Arguello/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/Assign_Ancestries/CRELES_MAF-frq.txt", header = TRUE)
+KGP_maf <- read.table("/home/BCRICWH.LAN/Paola.Arguello/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/Assign_Ancestries/1KGP_MAF-frq.txt", header = TRUE)
+
+MAF <- data.frame(CRELES=CRELES.maf$MAF, KGP=KGP_maf$MAF)
+
+library(ggplot2)
+ggplot(MAF,aes(x=CRELES, y=KGP)) + geom_point()
+
+
+```
+
+### 1. Run PCA with reference samples
+#### 1A. Running the PCA with 1KGP samples: EU, YRI and CHB
+
+a. Create a merged sample file of 1KGP and CRELES
+
+This new file will serve to remove/keep the sample sized required from the merged data set to be able to analyze it easily. 
+
+```{r, eval=FALSE}
+## Loading CRELES sample files -------------------------------------------- 
+CRELES <- read.csv("/home/BCRICWH.LAN/paola.arguello/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/PCA_subroutine/1KGP_merged/UpdateNov2020/CRELES_pop_meta.txt", 
+                   sep = " ", header = TRUE)
+CRELES <- CRELES[,c(1,3,4)]
+
+CRELES$FID <- gsub("UBC", "", CRELES$UBC_ID)
+CRELES$SuperPop <- "CRELES"
+mix.pop <- unlist(strsplit(as.character(CRELES$Pop), "-"))
+CRELES$Population <- mix.pop[which(mix.pop != "CRELES")]
+
+CRELES <- CRELES[,c(4,2,5,6)]
+
+## It seems like there is no overlap with CRELES when attemting to subset the merged plink files (1KGP+CRELES) 
+## Because the family IDs are different, so I'll change them back to what they should be:
+## Loading the family IID from the genotyping from the merging step (12)
+M12 <- read.csv("/home/BCRICWH.LAN/paola.arguello/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/PCA_subroutine/1KGP_merged/12M_CRELES.merge.1KGP.fam", sep = " ", header = FALSE)
+m12.names <- M12[,1:2]
+colnames(m12.names) <- c("Real_FID", "IID")
+
+CRELES.new <- merge(m12.names,CRELES, by="IID")
+CRELES <- CRELES.new[,c(2,1,4,5)]
+colnames(CRELES) <- c("FID", "IID", "SuperPop", "Population")
+
+## Reorder based on family ID
+CRELES <- CRELES[order(as.numeric(CRELES$FID)),]
+
+## Load and mofify the 1KGP sample file ------------------------------------------
+KGP <- read.csv("/home/BCRICWH.LAN/paola.arguello/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/PCA_subroutine/1KGP_merged/UpdateNov2020/1KGP_samp-info.txt", 
+                sep = "\t", header = TRUE)
+
+KGP$FID <- 0
+colnames(KGP) <- c("IID", "SEX", "SuperPop", "Population", "FID")
+KGP <- KGP[,c(5,1,3,4)]
+
+## Merge the files together and create a new merged sample information file --------
+merged.1KGP.CRELES.sample.info <- rbind(KGP,CRELES)
+write.csv(merged.1KGP.CRELES.sample.info, file="/home/BCRICWH.LAN/paola.arguello/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/PCA_subroutine/1KGP_merged/UpdateNov2020/sample_info_1KGP-CRELES.txt",quote = FALSE,sep = "\t",row.names = FALSE, col.names = TRUE)
+
+
+```
+
+b. Making a subset of the EU, YRI,CHB + Nicoyan, CostaRican populations
+
+```{bash, eval=FALSE}
+cd ~/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/PCA_subroutine/1KGP_merged/UpdateNov2020
+
+grep -e "CRELES" -e "CEU" -e "YRI" -e "CHB" sample_info_1KGP-CRELES.txt > sample_info_YRI-CEU-CHB-CRELES.txt
+
+~/KoborLab/kobor_space/ppascualli/Programs/plink  \
+--bfile ../12M_CRELES.merge.1KGP \
+--keep sample_info_YRI-CEU-CHB-CRELES.txt \
+--make-bed \
+--out 13M_CRELES_YCC_merged
+
+```
+
+*--keep: 783 people remaining.*
+
+c. Running the PCA on merged data
+
+```{bash, eval=FALSE}
+~/KoborLab/kobor_space/ppascualli/Programs/plink  \
+--bfile 13M_CRELES_YCC_merged \
+--pca \
+--out 14M_CRELES_YCC_merged_pPCA
+```
+
+*99,616 variants used to calculate the PCs*
+
+d. Visualization
+
+```{r}
+### ------------------ PCA using plink output files ------------------------------- #######
+eigenvec <- read.table("~/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/PCA_subroutine_pop-stratification/1KGP_merged/UpdateNov2020/14M_CRELES_YCC_merged_pPCA.eigenvec")
+colnames(eigenvec) <- c(c("FID", "IID"), paste0("PC", seq(1,20)))
+samples_info <- read.table("~/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/PCA_subroutine_pop-stratification/1KGP_merged/UpdateNov2020/sample_info_YRI-CEU-CHB-CRELES.txt")
+colnames(samples_info) <- c("FID", "IID", "SuperPop", "Population")
+samples_info <- samples_info[,2:4]
+
+## We add a column into the eigenvec to have the population to be able to colour it:
+eigenvec.pop <- merge(samples_info, eigenvec, by="IID")
+
+library(ggplot2)
+library(ggpubr)
+ggplot(eigenvec.pop, aes(PC1,PC2,color=Population)) + geom_point()  + ggtitle("CRELES with YRI, CEU, CHB references")
+
+a <- ggplot(eigenvec.pop, aes(PC2,PC3,color=Population)) + geom_point() 
+b <- ggplot(eigenvec.pop, aes(PC3,PC4,color=Population)) + geom_point() 
+c <- ggplot(eigenvec.pop, aes(PC4,PC5,color=Population)) + geom_point() 
+d <- ggplot(eigenvec.pop, aes(PC5,PC6,color=Population)) + geom_point() 
+
+ggarrange(a,b,c,d, ncol=2, nrow=2)
+
+```
+
+
+#### 1B. Running the PCA exploring AMR populations: MXL,COL, PUR, PEL
+
+Admixed American is a subpopulation in 1KGP, that comprises several regions within Latin America. Thus, we want to know which AMR population is more closely related to CRELES.
+
+a. Subset the data to AMR and CRELES Super populations
+
+```{bash, eval=FALSE}
+cd ~/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/PCA_subroutine/1KGP_merged/UpdateNov2020
+
+grep -e "CRELES" -e "AMR" sample_info_1KGP-CRELES.txt > sample_info_AMR-CRELES.txt
+
+~/KoborLab/kobor_space/ppascualli/Programs/plink  \
+--bfile ../12M_CRELES.merge.1KGP \
+--keep sample_info_AMR-CRELES.txt \
+--make-bed \
+--out 13Mb_CRELES_AMR_merged
+
+```
+
+*--keep: 820 people remaining.*
+
+b. Run the PCA on the merged populations (AMR+CRELES)
+```{bash, eval=FALSE}
+~/KoborLab/kobor_space/ppascualli/Programs/plink  \
+--bfile 13Mb_CRELES_AMR_merged \
+--pca \
+--out 14Mb_CRELES_AMR_merged_pPCA
+```
+
+*99616 variants and 820 people pass filters and QC.*
+
+c. Visualization
+
+```{r}
+### ------------------ PCA using plink output files ------------------------------- #######
+eigenvec <- read.table("~/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/PCA_subroutine_pop-stratification/1KGP_merged/UpdateNov2020/14Mb_CRELES_AMR_merged_pPCA.eigenvec")
+colnames(eigenvec) <- c(c("FID", "IID"), paste0("PC", seq(1,20)))
+samples_info <- read.table("~/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/PCA_subroutine_pop-stratification/1KGP_merged/UpdateNov2020/sample_info_AMR-CRELES.txt")
+colnames(samples_info) <- c("FID", "IID", "SuperPop", "Population")
+samples_info <- samples_info[,2:4]
+
+## We add a column into the eigenvec to have the population to be able to colour it:
+eigenvec.pop <- merge(samples_info, eigenvec, by="IID")
+
+library(ggplot2)
+library(ggpubr)
+ggplot(eigenvec.pop, aes(PC1,PC2,color=Population)) + geom_point(size=3)  + ggtitle("CRELES with AMR populations as references")
+
+a <- ggplot(eigenvec.pop, aes(PC2,PC3,color=Population)) + geom_point() 
+b <- ggplot(eigenvec.pop, aes(PC3,PC4,color=Population)) + geom_point() 
+c <- ggplot(eigenvec.pop, aes(PC4,PC5,color=Population)) + geom_point() 
+d <- ggplot(eigenvec.pop, aes(PC5,PC6,color=Population)) + geom_point() 
+
+ggarrange(a,b,c,d, ncol=2, nrow=2)
+
+```
+
+#### 1C. Running the PCA using all the 1KGP super populations
+
+a. No need to subset the data, as we will be using all 
+
+```{bash, eval=FALSE}
+cd ~/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/PCA_subroutine/1KGP_merged/UpdateNov2020
+
+## I will just be copying the file and assigning it a new name
+
+~/KoborLab/kobor_space/ppascualli/Programs/plink  \
+--bfile ../12M_CRELES.merge.1KGP \
+--make-bed \
+--out 13Mc_CRELES_1KGP_merged
+
+```
+
+*99616 variants and 2997 people pass filters and QC.*
+
+b. Run the PCA on the merged populations (AMR+CRELES)
+```{bash, eval=FALSE}
+~/KoborLab/kobor_space/ppascualli/Programs/plink  \
+--bfile 13Mc_CRELES_1KGP_merged \
+--pca \
+--out 14Mc_CRELES_1KGP_merged_pPCA
+```
+
+*99616 variants and 2997 people pass filters and QC*
+
+c. Visualization
+
+```{r}
+### ------------------ PCA using plink output files ------------------------------- #######
+eigenvec <- read.table("~/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/PCA_subroutine_pop-stratification/1KGP_merged/UpdateNov2020/14Mc_CRELES_1KGP_merged_pPCA.eigenvec")
+colnames(eigenvec) <- c(c("FID", "IID"), paste0("PC", seq(1,20)))
+samples_info <- read.table("~/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/PCA_subroutine_pop-stratification/1KGP_merged/UpdateNov2020/sample_info_1KGP-CRELES.txt")
+colnames(samples_info) <- c("FID", "IID", "SuperPop", "Population")
+samples_info <- samples_info[,2:4]
+
+## We add a column into the eigenvec to have the population to be able to colour it:
+eigenvec.pop <- merge(samples_info, eigenvec, by="IID")
+
+library(ggplot2)
+library(ggpubr)
+ggplot(eigenvec.pop, aes(PC1,PC2,color=SuperPop)) + geom_point(size=3)  + ggtitle("CRELES with 1KGP  superpopulations as references")
+
+a <- ggplot(eigenvec.pop, aes(PC2,PC3,color=SuperPop)) + geom_point() 
+b <- ggplot(eigenvec.pop, aes(PC3,PC4,color=SuperPop)) + geom_point() 
+c <- ggplot(eigenvec.pop, aes(PC4,PC5,color=SuperPop)) + geom_point() 
+d <- ggplot(eigenvec.pop, aes(PC5,PC6,color=SuperPop)) + geom_point() 
+
+ggarrange(a,b,c,d, ncol=2, nrow=2)
+
+```
+
+
+### 2. Assigning ancestry groups
+
+**NOTE: Do not trust a lot the way the projected PCA looks like, research and ask why can't we use the same mahalanobis distance but with the calculated PCs**
+
+
+**Credits to Will Cazazza for finding the method and sharing his code to estimate the distances, which is the one used here. **
+
+Adapting what is explained in *Peterson, Roseann E., et al. "The utility of empirically assigning ancestry groups in cross‐population genetic studies of addiction." The American journal on addictions 26.5 (2017): 494-501.*
+
+
+It is important to correctly stratify the data due to the following reasons described in the aforementioned paper:
+
+- Samples that do not have reported ancestry or evidence of admixture tend to get removed from analysis, reducing significantly the sample size. 
+
+- PCA inspection is subjective and may not be the best way to view the variation.
+
+- Accounting for PCs into your analysis (often GWAS): In practice blindly include PCs in GWAS (typically 10-20) can negatively impact results (HOW?).
+
+-- Too many PCs, the model may be overfit, which can reduce power to detect relevant variation. 
+
+-- Too few PCs, particularly important for admixed and diverse samples, population stratification could remain, potentially leading to false associations. 
+
+- Many quality control steps require genetic homogeneous samples (like..?).
+
+- Ancestry can influence imputation, some methods (MaCH, Beagle) recomend within ancestral group imputation, meanwhile others (IMPUTE2) recomend using diverse 
+panels. SPecific methods for admixed populations have also been created (MaCHAdmix). 
+
+- The choice to perform imputation within or across groups will depend on the imputation method's recommended practices. But the imputation quality will vary depending on several factors aside from the reference panel such as SNPs array density, content and design. 
+
+**In Summary:** 
+
+- Is important to do this step if you are working with an ancestrally diverse cohort, meaning individuals from several ancestries that are different from each other. In my case, I am working with an cohort of all Costa Rican individuals so I first want to make sure there all match to the Admixed American super population of 1KGP and then look deeper into the composition of their admixed ancestry that's composed of European, African and Native American. 
+
+_______________________________________
+
+There are two main steps that we need to do in order to assign ancestry using the mahalanobis distance: 
+
+1. To recalculate the PCA with flashPCA to ensure we are able to project the test cohort (CRELES) onto the reference (1KGP)
+
+2. To use the mahalanobis distance method described in *Peterson., et al. (2017).* and implemented by Will Cazzaza. 
+
+Generally speaking, the method works by calculating the distances from the cluster center of the 1KGP reference populations to the data points. In the paper it is recommended to run the PCA within your samples and then project onto that the 1KGP reference, however their cohort size is above 7,000 individuals. Thus, we will try to project our data onto the 1KGP reference and the reference onto our data and visualize the differences and choose from there. 
+
+
+##### 2A. Using all 1KGP super populations
+###### Step 1. Using flashPCA to project 1KGP onto CRELES
+
+In order to project data, we need to:
+
+  a. The old and new PLINK files contain exactly the same SNPs and alleles (you can use plink --reference-allele to ensure consistent allele ordering).
+
+
+  b. You have previously run flashpca and saved the SNP loadings (--outload loadings.txt) and their means and standard deviations (--outmeansd meansd.txt). Plus, that you are using the same standardisation (--standx) for the old and new data, as well as the same divisor (--div; by default p).
+  
+  c. Visualize the projection
+
+__________________
+
+a. Ensure that both files have the same SNPs
+
+```{bash, eval=FALSE}
+## From the merged file created before (12M_CRELES.merge.1KGP - 99616 variants and 2997 people pass filters and QC), we will split it into two different files, one for CRELES and one for 1KGP:
+
+#So first, we are going to re-compute the PCA to be able to project 1KGP onto our data PCA. For this, we will use flashPCA, which is downloaded onto my folder: * ~/KoborLab/kobor_space/ppascualli/Files/CRELES/programs*
+
+#We will first, ensure the same SNPs and alleles are in both the CRELES and 1KGP files. For this, I will be splitting the merged file previously made (step 12 of the Principal Component Analysis)
+
+## CRELES --
+ ~/KoborLab/kobor_space/ppascualli/Programs/plink \
+ --bfile ~/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/PCA_subroutine/1KGP_merged/12M_CRELES.merge.1KGP \
+ --remove-fam 1KGP_fam.txt \
+ --make-bed \
+ --out CRELES_subset
+ # 99616 variants and 493 people pass filters and QC.
+ 
+ ### 1KGP --
+  ~/KoborLab/kobor_space/ppascualli/Programs/plink \
+ --bfile ~/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/PCA_subroutine/1KGP_merged/12M_CRELES.merge.1KGP \
+ --keep-fam 1KGP_fam.txt \
+ --make-bed \
+ --out 1KGP_subset
+ # 99616 variants and 2504 people pass filters and QC.
+ 
+
+```
+
+b. Running CRELES flash PCA and data projection on the complete super population set of 1KGP
+
+```{bash, eval=FALSE}
+## Projecting 1KGP onto CRELES: ------------------------------------------------------
+
+### Run pca alone, which will then be used to project the data onto: 
+cd ~/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/Assign_Ancestries/CRELES_1KGP-projected/
+
+~/KoborLab/kobor_space/ppascualli/Programs/flashpca_x86-64 --bfile CRELES_subset \
+--outload loadings.txt --outmeansd meansd.txt \
+--suffix _CRELES_subset.txt
+
+## Projecting 1KGP:
+~/KoborLab/kobor_space/ppascualli/Programs/flashpca_x86-64 --bfile ../1KGP_subset --project \
+--inmeansd meansd.txt --outproj CRELES_1KGP-projected.txt --inload loadings.txt -v
+
+## Finally we merged the original PCA with the projection:
+ cat CRELES_1KGP-projected.txt eigenvectors_CRELES_subset.txt  | grep -v "U1" > CRELES_1KGP-projected_merged.txt
+ 
+```
+
+Now in order to continue with the mahalanobis distance calculation, we will need first to visualize the data to make sure it matches what we are expecting. 
+
+c. Data projection visualization
+
+```{r}
+## Visualizing the data: 
+CRELES_1KPG_projected <- read.table("/home/BCRICWH.LAN/Paola.Arguello/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/Assign_Ancestries/CRELES_1KGP-projected/CRELES_1KGP-projected_merged.txt", header = TRUE)
+
+## We load the meta files for both the reference and CRELES:
+KGP.pop <- read.table("/home/BCRICWH.LAN/Paola.Arguello/KoborLab/kobor_space/ppascualli/Files/CRELES/genotyping_references/1KGP/1KGP_samp-info.txt", header=FALSE) 
+CRELES.pop <- read.table("/home/BCRICWH.LAN/Paola.Arguello/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/PCA_subroutine_pop-stratification/CRELES_pop_meta.txt")
+
+CRELES.pop <-CRELES.pop[,c(3,4)]
+KGP.pop <- KGP.pop[,c(1,3)]
+colnames(CRELES.pop) <-c("IID", "Pop")
+colnames(KGP.pop) <-c("IID", "Pop")
+eigenvec.pop <- rbind(CRELES.pop,KGP.pop)
+
+eigenvec <- merge(CRELES_1KPG_projected, eigenvec.pop, by="IID")
+
+library(ggplot2)
+library(ggpubr)
+ggplot(eigenvec, aes(PC1,PC2,color=Pop)) + geom_point()  + ggtitle("CRELES with 1KPG-projected")
+
+a <- ggplot(eigenvec, aes(PC2,PC3,color=Pop)) + geom_point()  
+b <- ggplot(eigenvec, aes(PC3,PC4,color=Pop)) + geom_point() 
+c <- ggplot(eigenvec, aes(PC4,PC5,color=Pop)) + geom_point()  
+d <- ggplot(eigenvec, aes(PC5,PC6,color=Pop)) + geom_point()  
+
+ggarrange(a,b,c,d, ncol=2, nrow=2)
+
+```
+
+
+###### Step 2. Ancestry Assignment using Mahalonobis distance
+
+Using Will's code adapted from: *Peterson, Roseann E., et al. "The utility of empirically assigning ancestry groups in cross‐population genetic studies of addiction." The American journal on addictions 26.5 (2017): 494-501.* 
+
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE}
+
+## Now that we have the pca files for both the CRELES pca and the projection, we load the ethnicity information for all the samples and merge them with the eigenvector files: ----------
+# Loading ethnicity data:
+KGP_CRELES_sample.info <- read.table("~/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/PCA_subroutine_pop-stratification/1KGP_merged/UpdateNov2020/sample_info_1KGP-CRELES.txt",
+                                     header = TRUE)
+## Splitting the data:
+CRELES.pop <- KGP_CRELES_sample.info[KGP_CRELES_sample.info$SuperPop == "CRELES",]
+KGP.pop <- KGP_CRELES_sample.info[KGP_CRELES_sample.info$SuperPop != "CRELES",]
+
+### Will's code: ---------------------------------------------
+# Read data and merge in ethnicity labels:
+library(dplyr)
+pcs_CRELES <- read.delim("/home/BCRICWH.LAN/Paola.Arguello/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/Assign_Ancestries/CRELES_1KGP-projected/pcs_CRELES_subset.txt") 
+pcs_CRELES <- pcs_CRELES[,c(2:12)]  %>%
+  left_join(CRELES.pop, by = c("IID")) %>% unique()
+
+pcs_1kgp_projected <- read.delim("/home/BCRICWH.LAN/Paola.Arguello/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/Assign_Ancestries/CRELES_1KGP-projected/CRELES_1KGP-projected.txt")
+pcs_1kgp_projected <- pcs_1kgp_projected[,c(2:12)]  %>% 
+  left_join(KGP.pop , by = c("IID"))  %>% unique()
+
+# remove outliers from reference population
+# pcs_1kgp_projected %>% group_by(Pop) %>% summarize_at(vars(contains("PC")), list(~sd(.),~mean(.)))
+
+pc_EUR <- pcs_1kgp_projected %>% 
+  filter(SuperPop== "EUR") %>% 
+  select(contains("PC")) %>% 
+  filter(sqrt(mahalanobis(.,colMeans(.),cov(.))) < 4)
+
+pc_EAS <- pcs_1kgp_projected %>% 
+  filter(SuperPop== "EAS") %>% 
+  select(contains("PC")) %>% 
+  filter(sqrt(mahalanobis(.,colMeans(.),cov(.))) < 4)
+
+pc_SAS <- pcs_1kgp_projected %>% 
+  filter(SuperPop== "SAS") %>% 
+  select(contains("PC")) %>% 
+  filter(sqrt(mahalanobis(.,colMeans(.),cov(.))) < 4)
+
+pc_AFR <- pcs_1kgp_projected %>% 
+  filter(SuperPop== "AFR") %>% 
+  select(contains("PC")) %>% 
+  filter(sqrt(mahalanobis(.,colMeans(.),cov(.))) < 4)
+
+pc_AMR <- pcs_1kgp_projected %>% 
+  filter(SuperPop== "AMR") %>% 
+  select(contains("PC")) %>% 
+  filter(sqrt(mahalanobis(.,colMeans(.),cov(.))) < 4)
+
+##
+
+library(tidyr)
+library(dplyr)
+library(vctrs)
+
+just_pcs <- pcs_CRELES %>% select(contains("PC"))
+
+assign_clusters <- pcs_CRELES %>% mutate( ## First we define the super population distances to the 1KGP pop
+  EUR_dist =  sqrt(mahalanobis(just_pcs, colMeans(pc_EUR),cov(pc_EUR))),
+  EAS_dist =  sqrt(mahalanobis(just_pcs, colMeans(pc_EAS),cov(pc_EAS))),
+  SAS_dist =  sqrt(mahalanobis(just_pcs, colMeans(pc_SAS),cov(pc_SAS))),
+  AMR_dist =  sqrt(mahalanobis(just_pcs, colMeans(pc_AMR),cov(pc_AMR))),
+  AFR_dist =  sqrt(mahalanobis(just_pcs, colMeans(pc_AFR),cov(pc_AFR)))
+) %>% mutate( ## Now we define the standard deviation from the cluster centers
+  EUR_sd =  EUR_dist > 4 * sd(EUR_dist),
+  EAS_sd =  EAS_dist > 4 * sd(EAS_dist),
+  SAS_sd =  SAS_dist > 4 * sd(SAS_dist),
+  AMR_sd =  AMR_dist > 4 * sd(AMR_dist),
+  AFR_sd =  AFR_dist > 4 * sd(AFR_dist)
+) %>% ## We filter out the ones that are above 4 sd deviations and assign the others
+  filter_at(vars(contains("sd")),all_vars(!.))  %>%
+  pivot_longer(contains("dist")) %>%
+  mutate(name=gsub("_dist","",name)) %>%
+  group_by(FID,IID) %>% 
+  summarize(
+    assigned=name[which.min(value)]
+  )
+
+reclassified_data <- pcs_CRELES %>% left_join(assign_clusters,by=c("FID","IID")) %>% replace_na(list(assigned="excluded"))
+
+print(table(reclassified_data[,14:15]))
+
+## Now we visualize the the data that was excluded and the ancestries that they were assigned to:
+library(ggplot2)
+ggplot(na.omit(reclassified_data), aes(assigned, fill=Population)) + geom_bar(position="dodge") + scale_fill_brewer(palette = "Paired")
+
+## And how do they look across PCs
+ggplot(reclassified_data, aes(PC1,PC2, color = assigned)) + geom_point() + scale_fill_brewer(palette = "Paired")
+
+a <- ggplot(reclassified_data, aes(PC2,PC3, color = assigned)) + geom_point() + scale_fill_brewer(palette = "Paired")
+b <- ggplot(reclassified_data, aes(PC3,PC4, color = assigned)) + geom_point() + scale_fill_brewer(palette = "Paired")
+c <- ggplot(reclassified_data, aes(PC4,PC5, color = assigned)) + geom_point() + scale_fill_brewer(palette = "Paired")
+d <-ggplot(reclassified_data, aes(PC5,PC6, color = assigned)) + geom_point() + scale_fill_brewer(palette = "Paired")
+
+library(ggpubr)
+ggarrange(a,b,c,d, ncol=2, nrow=2)
+
+## Printing out how many samples were excluded: 
+write.table(reclassified_data, 
+            file="/home/BCRICWH.LAN/Paola.Arguello/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/PCA_subroutine_pop-stratification/1KGP_merged/UpdateNov2020/Assign_ancestry/CRELES-flashPCA_1KGP-projected_Ancestry-assig.txt", 
+            append = FALSE, row.names = FALSE, col.names = TRUE)
+
+print(paste("Samples exluded:",sum(reclassified_data$assigned == "excluded"), sep = " "))
+
+
+```
+
+
+##### 2B. Using only AMR populations: MXL, COL, PUR, PEL
+I want to calculate the mahalanobis distance using only the AMR subgroup due to the variability of the admixture that we see on the AMR super population of 1KGP. Following what was described by: *Martin, Alicia R., et al. "Human demographic history impacts genetic risk prediction across diverse populations." The American Journal of Human Genetics 100.4 (2017): 635-649.*
+
+
+**NOTE: We will repeat the two steps, but omiting the CRELES subset part because that will remain the same.**
+
+###### Step 1. Using flashPCA to project the AMR populations onto CRELES
+
+a. Ensure that both files have the same SNPs
+
+```{bash, eval=FALSE}
+## From the merged file created before (12M_CRELES.merge.1KGP - 99616 variants and 2997 people pass filters and QC), we will split it into two different files, one for CRELES and one for 1KGP:
+
+## CRELES subset will remain the same, so there is no need to run it again.
+
+## CRELES --
+## ~/KoborLab/kobor_space/ppascualli/Programs/plink \
+## --bfile ~/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/PCA_subroutine/1KGP_merged/12M_CRELES.merge.1KGP \
+## --remove-fam 1KGP_fam.txt \
+## --make-bed \
+## --out CRELES_subset
+ # 99616 variants and 493 people pass filters and QC.
+ 
+ ### 1KGP subset of AMR populations
+ cd /KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/PCA_subroutine/1KGP_merged/UpdateNov2020/Assign_ancestry/
+  
+  ~/KoborLab/kobor_space/ppascualli/Programs/plink \
+ --bfile ../../12M_CRELES.merge.1KGP \
+ --keep ../sample_info_AMR-CRELES.txt \
+ --make-bed \
+ --out AMR_subset
+
+# 99616 variants and 820 people pass filters and QC
+
+```
+
+b. Running CRELES flash PCA and data projection on the AMR populations of 1KGP
+
+```{bash, eval=FALSE}
+## Projecting 1KGP onto CRELES: ------------------------------------------------------
+
+### Run pca alone, which will then be used to project the data onto: 
+#cd ~/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/Assign_Ancestries/CRELES_1KGP-projected/
+
+#~/KoborLab/kobor_space/ppascualli/Programs/flashpca_x86-64 --bfile CRELES_subset \
+#--outload loadings.txt --outmeansd meansd.txt \
+#--suffix _CRELES_subset.txt
+
+## ------------------------------------------------------------------------------------------------------
+## IMPORTANT: I copied the CRELES flashpca files onto the same updateNov2020 folder to avoid confusion
+
+## Projecting AMR:
+ cd /KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/PCA_subroutine/1KGP_merged/UpdateNov2020/Assign_ancestry/
+
+~/KoborLab/kobor_space/ppascualli/Programs/flashpca_x86-64 \
+--bfile AMR_subset \
+--project \
+--inmeansd CRELES_flashpca_files/meansd.txt \
+--outproj CRELES_AMR-projected.txt \
+--inload CRELES_flashpca_files/loadings.txt -v
+
+## Finally we merged the original PCA with the projection:
+ cat CRELES_AMR-projected.txt CRELES_flashpca_files/eigenvectors_CRELES_subset.txt  | grep -v "U1" > CRELES_AMR-projected_merged.txt
+ 
+```
+
+Now in order to continue with the mahalanobis distance calculation, we will need first to visualize the data to make sure it matches what we are expecting. 
+
+c. Data projection visualization
+
+```{r}
+## Visualizing the data: 
+CRELES_AMR_projected <- read.table("/home/BCRICWH.LAN/Paola.Arguello/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/PCA_subroutine_pop-stratification/1KGP_merged/UpdateNov2020/Assign_ancestry/CRELES_AMR-projected_merged.txt", header = TRUE)
+
+## We merge the population information (sample file) with the eigenvectors:
+sample_info_AMR_CRELES <- read.table("/home/BCRICWH.LAN/Paola.Arguello/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/PCA_subroutine_pop-stratification/1KGP_merged/UpdateNov2020/sample_info_AMR-CRELES.txt")
+sample_info_AMR_CRELES <- sample_info_AMR_CRELES[,2:4]
+colnames(sample_info_AMR_CRELES) <- c("IID", "SuperPop", "Population")
+
+eigenvec <- merge(CRELES_AMR_projected, sample_info_AMR_CRELES, by="IID")
+
+library(ggplot2)
+library(ggpubr)
+ggplot(eigenvec, aes(PC1,PC2,color=Population)) + geom_point(size=4)  + ggtitle("CRELES with AMR populations projected")
+
+a <- ggplot(eigenvec, aes(PC2,PC3,color=Population)) + geom_point()  
+b <- ggplot(eigenvec, aes(PC3,PC4,color=Population)) + geom_point() 
+c <- ggplot(eigenvec, aes(PC4,PC5,color=Population)) + geom_point()  
+d <- ggplot(eigenvec, aes(PC5,PC6,color=Population)) + geom_point()  
+
+ggarrange(a,b,c,d, ncol=2, nrow=2)
+
+```
+
+
+###### Step 2. Ancestry Assignment using Mahalonobis distance
+
+Using Will's code adapted from: *Peterson, Roseann E., et al. "The utility of empirically assigning ancestry groups in cross‐population genetic studies of addiction." The American journal on addictions 26.5 (2017): 494-501.* 
+
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE}
+
+## Now that we have the pca files for both the CRELES pca and the projection, we load the ethnicity information for all the samples and merge them with the eigenvector files: ----------
+# Loading ethnicity data:
+AMR_CRELES_sample.info <- read.table("/home/BCRICWH.LAN/Paola.Arguello/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/PCA_subroutine_pop-stratification/1KGP_merged/UpdateNov2020/sample_info_AMR-CRELES.txt",
+                                     header = FALSE)
+colnames(AMR_CRELES_sample.info) <- c("FID", "IID", "SuperPop", "Population")
+
+## Splitting the data:
+CRELES.pop <- AMR_CRELES_sample.info[AMR_CRELES_sample.info$SuperPop == "CRELES",]
+AMR.pop <- AMR_CRELES_sample.info[AMR_CRELES_sample.info$SuperPop != "CRELES",]
+
+### Will's code: ---------------------------------------------
+# Read data and merge in ethnicity labels:
+library(dplyr)
+pcs_CRELES <- read.delim("/home/BCRICWH.LAN/Paola.Arguello/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/Assign_Ancestries/CRELES_1KGP-projected/pcs_CRELES_subset.txt") 
+pcs_CRELES <- pcs_CRELES[,c(2:12)]  %>%
+  left_join(CRELES.pop, by = c("IID")) %>% unique()
+
+pcs_AMR_projected <- read.delim("/home/BCRICWH.LAN/Paola.Arguello/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/PCA_subroutine_pop-stratification/1KGP_merged/UpdateNov2020/Assign_ancestry/CRELES_AMR-projected.txt")
+pcs_AMR_projected <- pcs_AMR_projected[,c(2:12)]  %>% 
+  left_join(AMR.pop , by = c("IID"))  %>% unique()
+
+# remove outliers from reference population
+# pcs_AMR_projected %>% group_by(Pop) %>% summarize_at(vars(contains("PC")), list(~sd(.),~mean(.)))
+
+pc_PUR <- pcs_AMR_projected %>% 
+  filter(Population== "PUR") %>% 
+  select(contains("PC")) %>% 
+  filter(sqrt(mahalanobis(.,colMeans(.),cov(.))) < 4)
+
+pc_CLM <- pcs_AMR_projected %>% 
+  filter(Population== "CLM") %>% 
+  select(contains("PC")) %>% 
+  filter(sqrt(mahalanobis(.,colMeans(.),cov(.))) < 4)
+
+pc_PEL <- pcs_AMR_projected %>% 
+  filter(Population== "PEL") %>% 
+  select(contains("PC")) %>% 
+  filter(sqrt(mahalanobis(.,colMeans(.),cov(.))) < 4)
+
+pc_MXL <- pcs_AMR_projected %>% 
+  filter(Population== "MXL") %>% 
+  select(contains("PC")) %>% 
+  filter(sqrt(mahalanobis(.,colMeans(.),cov(.))) < 4)
+
+##
+
+library(tidyr)
+library(dplyr)
+library(vctrs)
+
+just_pcs <- pcs_CRELES %>% select(contains("PC"))
+
+assign_clusters <- pcs_CRELES %>% mutate( ## First we define the super population distances to the 1KGP pop
+  PUR_dist =  sqrt(mahalanobis(just_pcs, colMeans(pc_PUR),cov(pc_PUR))),
+  CLM_dist =  sqrt(mahalanobis(just_pcs, colMeans(pc_CLM),cov(pc_CLM))),
+  PEL_dist =  sqrt(mahalanobis(just_pcs, colMeans(pc_PEL),cov(pc_PEL))),
+  MXL_dist =  sqrt(mahalanobis(just_pcs, colMeans(pc_MXL),cov(pc_MXL)))
+) %>% mutate( ## Now we define the standard deviation from the cluster centers
+  PUR_sd =  PUR_dist > 4 * sd(PUR_dist),
+  CLM_sd =  CLM_dist > 4 * sd(CLM_dist),
+  PEL_sd =  PEL_dist > 4 * sd(PEL_dist),
+  MXL_sd =  MXL_dist > 4 * sd(MXL_dist)
+) %>% ## We filter out the ones that are above 4 sd deviations and assign the others
+  filter_at(vars(contains("sd")),all_vars(!.))  %>%
+  pivot_longer(contains("dist")) %>%
+  mutate(name=gsub("_dist","",name)) %>%
+  group_by(FID,IID) %>% 
+  summarize(
+    assigned=name[which.min(value)]
+  )
+
+reclassified_data <- pcs_CRELES %>% left_join(assign_clusters,by=c("FID","IID")) %>% replace_na(list(assigned="excluded"))
+
+print(table(reclassified_data[,14:15]))
+
+## Now we visualize the the data that was excluded and the ancestries that they were assigned to:
+library(ggplot2)
+ggplot(na.omit(reclassified_data), aes(assigned, fill=Population)) + geom_bar(position="dodge") + scale_fill_brewer(palette = "Paired")
+
+## And how do they look across PCs
+ggplot(reclassified_data, aes(PC1,PC2, color = assigned)) + geom_point(size=4) + scale_fill_brewer(palette = "Paired")
+
+a <- ggplot(reclassified_data, aes(PC2,PC3, color = assigned)) + geom_point() + scale_fill_brewer(palette = "Paired")
+b <- ggplot(reclassified_data, aes(PC3,PC4, color = assigned)) + geom_point() + scale_fill_brewer(palette = "Paired")
+c <- ggplot(reclassified_data, aes(PC4,PC5, color = assigned)) + geom_point() + scale_fill_brewer(palette = "Paired")
+d <-ggplot(reclassified_data, aes(PC5,PC6, color = assigned)) + geom_point() + scale_fill_brewer(palette = "Paired")
+
+library(ggpubr)
+ggarrange(a,b,c,d, ncol=2, nrow=2)
+
+## Printing out how many samples were excluded: 
+write.table(reclassified_data, 
+            file="/home/BCRICWH.LAN/Paola.Arguello/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/PCA_subroutine_pop-stratification/1KGP_merged/UpdateNov2020/Assign_ancestry/CRELES-flashPCA_AMR-projected_Ancestry-assig.txt", 
+            append = FALSE, row.names = FALSE, col.names = TRUE)
+
+print(paste("Samples exluded:",sum(reclassified_data$assigned == "excluded"), sep = " "))
+
+
+```
+
+
+
+##### 2C. Using selected subpopulations: CEU, YRI and PEL (NAT proxy)
+###### Step 1. Using flashPCA to project the AMR populations onto CRELES
+
+a. Ensure that both files have the same SNPs
+
+```{bash, eval=FALSE}
+## From the merged file created before (12M_CRELES.merge.1KGP - 99616 variants and 2997 people pass filters and QC), we will split it into two different files, one for CRELES and one for 1KGP:
+
+## CRELES subset will remain the same, so there is no need to run it again.
+
+## CRELES --
+## ~/KoborLab/kobor_space/ppascualli/Programs/plink \
+## --bfile ~/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/PCA_subroutine/1KGP_merged/12M_CRELES.merge.1KGP \
+## --remove-fam 1KGP_fam.txt \
+## --make-bed \
+## --out CRELES_subset
+ # 99616 variants and 493 people pass filters and QC.
+ 
+ ### 1KGP subset of relevant populations
+ cd /KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/PCA_subroutine/1KGP_merged/UpdateNov2020/Assign_ancestry/
+  
+  ~/KoborLab/kobor_space/ppascualli/Programs/plink \
+ --bfile ../../12M_CRELES.merge.1KGP \
+ --keep ../sample_info_YRI-CEU-PEL-CRELES.txt \
+ --make-bed \
+ --out YRI-CEU-PEL_subset
+
+# 99616 variants and 765 people pass filters and QC.
+
+```
+
+b. Running CRELES flash PCA and data projection on the AMR populations of 1KGP
+
+```{bash, eval=FALSE}
+## Projecting 1KGP onto CRELES: ------------------------------------------------------
+
+### Run pca alone, which will then be used to project the data onto: 
+#cd ~/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/Assign_Ancestries/CRELES_1KGP-projected/
+
+#~/KoborLab/kobor_space/ppascualli/Programs/flashpca_x86-64 --bfile CRELES_subset \
+#--outload loadings.txt --outmeansd meansd.txt \
+#--suffix _CRELES_subset.txt
+
+## ------------------------------------------------------------------------------------------------------
+## IMPORTANT: I copied the CRELES flashpca files onto the same updateNov2020 folder to avoid confusion
+
+## Projecting AMR:
+cd /KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/PCA_subroutine/1KGP_merged/UpdateNov2020/Assign_ancestry/
+
+~/KoborLab/kobor_space/ppascualli/Programs/flashpca_x86-64 \
+--bfile YRI-CEU-PEL_subset \
+--project \
+--inmeansd CRELES_flashpca_files/meansd.txt \
+--outproj CRELES_YCP-projected.txt \
+--inload CRELES_flashpca_files/loadings.txt -v
+
+## Finally we merged the original PCA with the projection:
+cat CRELES_YCP-projected.txt CRELES_flashpca_files/eigenvectors_CRELES_subset.txt  | grep -v "U1" > CRELES_YCP-projected_merged.txt
+ 
+```
+
+Now in order to continue with the mahalanobis distance calculation, we will need first to visualize the data to make sure it matches what we are expecting. 
+
+c. Data projection visualization
+
+```{r}
+## Visualizing the data: 
+CRELES_YCP_projected <- read.table("/home/BCRICWH.LAN/Paola.Arguello/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/PCA_subroutine_pop-stratification/1KGP_merged/UpdateNov2020/Assign_ancestry/CRELES_YCP-projected_merged.txt", header = TRUE)
+
+## We merge the population information (sample file) with the eigenvectors:
+sample_info_YCP_CRELES <- read.table("/home/BCRICWH.LAN/Paola.Arguello/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/PCA_subroutine_pop-stratification/1KGP_merged/UpdateNov2020/sample_info_YRI-CEU-PEL-CRELES.txt")
+sample_info_YCP_CRELES <- sample_info_YCP_CRELES[,2:4]
+colnames(sample_info_YCP_CRELES) <- c("IID", "SuperPop", "Population")
+
+eigenvec <- merge(CRELES_YCP_projected, sample_info_YCP_CRELES, by="IID")
+
+library(ggplot2)
+library(ggpubr)
+ggplot(eigenvec, aes(PC1,PC2,color=Population)) + geom_point(size=4)  + ggtitle("CRELES with YRI, CEU and PEL populations projected")
+
+a <- ggplot(eigenvec, aes(PC2,PC3,color=Population)) + geom_point()  
+b <- ggplot(eigenvec, aes(PC3,PC4,color=Population)) + geom_point() 
+c <- ggplot(eigenvec, aes(PC4,PC5,color=Population)) + geom_point()  
+d <- ggplot(eigenvec, aes(PC5,PC6,color=Population)) + geom_point()  
+
+ggarrange(a,b,c,d, ncol=2, nrow=2)
+
+```
+
+
+###### Step 2. Ancestry Assignment using Mahalonobis distance
+
+Using Will's code adapted from: *Peterson, Roseann E., et al. "The utility of empirically assigning ancestry groups in cross‐population genetic studies of addiction." The American journal on addictions 26.5 (2017): 494-501.* 
+
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE}
+
+## Now that we have the pca files for both the CRELES pca and the projection, we load the ethnicity information for all the samples and merge them with the eigenvector files: ----------
+# Loading ethnicity data:
+KGP_CRELES_sample.info <- read.table("/home/BCRICWH.LAN/Paola.Arguello/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/PCA_subroutine_pop-stratification/1KGP_merged/UpdateNov2020/sample_info_YRI-CEU-PEL-CRELES.txt",
+                                     header = FALSE)
+colnames(KGP_CRELES_sample.info) <- c("FID", "IID", "SuperPop", "Population")
+
+## Splitting the data:
+CRELES.pop <- KGP_CRELES_sample.info[KGP_CRELES_sample.info$SuperPop == "CRELES",]
+KGP.pop <- KGP_CRELES_sample.info[KGP_CRELES_sample.info$SuperPop != "CRELES",]
+
+### Will's code: ---------------------------------------------
+# Read data and merge in ethnicity labels:
+library(dplyr)
+pcs_CRELES <- read.delim("/home/BCRICWH.LAN/Paola.Arguello/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/Assign_Ancestries/CRELES_1KGP-projected/pcs_CRELES_subset.txt") 
+pcs_CRELES <- pcs_CRELES[,c(2:12)]  %>%
+  left_join(CRELES.pop, by = c("IID")) %>% unique()
+
+pcs_1kgp_projected <- read.delim("/home/BCRICWH.LAN/Paola.Arguello/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/PCA_subroutine_pop-stratification/1KGP_merged/UpdateNov2020/Assign_ancestry/CRELES_YCP-projected.txt")
+pcs_1kgp_projected <- pcs_1kgp_projected[,c(2:12)]  %>% 
+  left_join(KGP.pop , by = c("IID"))  %>% unique()
+
+# remove outliers from reference population
+#pcs_1kgp_projected %>% group_by(Population) %>% summarize_at(vars(contains("PC")), list(~sd(.),~mean(.)))
+
+pc_CEU <- pcs_1kgp_projected %>% 
+  filter(Population== "CEU") %>% 
+  select(contains("PC")) %>% 
+  filter(sqrt(mahalanobis(.,colMeans(.),cov(.))) < 4)
+
+pc_YRI <- pcs_1kgp_projected %>% 
+  filter(Population== "YRI") %>% 
+  select(contains("PC")) %>% 
+  filter(sqrt(mahalanobis(.,colMeans(.),cov(.))) < 4)
+
+pc_PEL <- pcs_1kgp_projected %>% 
+  filter(Population== "PEL") %>% 
+  select(contains("PC")) %>% 
+  filter(sqrt(mahalanobis(.,colMeans(.),cov(.))) < 4)
+
+
+##
+
+library(tidyr)
+library(dplyr)
+library(vctrs)
+
+just_pcs <- pcs_CRELES %>% select(contains("PC"))
+
+assign_clusters <- pcs_CRELES %>% mutate( ## First we define the super population distances to the 1KGP pop
+  CEU_dist =  sqrt(mahalanobis(just_pcs, colMeans(pc_CEU),cov(pc_CEU))),
+  YRI_dist =  sqrt(mahalanobis(just_pcs, colMeans(pc_YRI),cov(pc_YRI))),
+  PEL_dist =  sqrt(mahalanobis(just_pcs, colMeans(pc_PEL),cov(pc_PEL)))
+) %>% mutate( ## Now we define the standard deviation from the cluster centers
+  CEU_sd =  CEU_dist > 4 * sd(CEU_dist),
+  YRI_sd =  YRI_dist > 4 * sd(YRI_dist),
+  PEL_sd =  PEL_dist > 4 * sd(PEL_dist)
+) %>% ## We filter out the ones that are above 4 sd deviations and assign the others
+  filter_at(vars(contains("sd")),all_vars(!.))  %>%
+  pivot_longer(contains("dist")) %>%
+  mutate(name=gsub("_dist","",name)) %>%
+  group_by(FID,IID) %>% 
+  summarize(
+    assigned=name[which.min(value)]
+  )
+
+reclassified_data <- pcs_CRELES %>% left_join(assign_clusters,by=c("FID","IID")) %>% replace_na(list(assigned="excluded"))
+
+print(table(reclassified_data[,14:15]))
+
+## Now we visualize the the data that was excluded and the ancestries that they were assigned to:
+library(ggplot2)
+ggplot(na.omit(reclassified_data), aes(assigned, fill=Population)) + geom_bar(position="dodge") + scale_fill_brewer(palette = "Paired")
+
+## And how do they look across PCs
+ggplot(reclassified_data, aes(PC1,PC2, color = assigned)) + geom_point() + scale_fill_brewer(palette = "Paired")
+
+a <- ggplot(reclassified_data, aes(PC2,PC3, color = assigned)) + geom_point() + scale_fill_brewer(palette = "Paired")
+b <- ggplot(reclassified_data, aes(PC3,PC4, color = assigned)) + geom_point() + scale_fill_brewer(palette = "Paired")
+c <- ggplot(reclassified_data, aes(PC4,PC5, color = assigned)) + geom_point() + scale_fill_brewer(palette = "Paired")
+d <-ggplot(reclassified_data, aes(PC5,PC6, color = assigned)) + geom_point() + scale_fill_brewer(palette = "Paired")
+
+library(ggpubr)
+ggarrange(a,b,c,d, ncol=2, nrow=2)
+
+## Printing out how many samples were excluded: 
+write.table(reclassified_data, 
+            file="/home/BCRICWH.LAN/Paola.Arguello/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/PCA_subroutine_pop-stratification/1KGP_merged/UpdateNov2020/Assign_ancestry/CRELES-flashPCA_1KGP-projected_Ancestry-assig.txt", 
+            append = FALSE, row.names = FALSE, col.names = TRUE)
+
+print(paste("Samples exluded:",sum(reclassified_data$assigned == "excluded"), sep = " "))
+
+
+```
+
+
+
+
+
+
+
+
+
+# Identity by Descent Analysis
+
+The IBD analysis must be performed within ancestry groups, that's why we check the ancestry with the PCs before. I expected to see more variability within CRELES. However, that was not the case and only a few samples were considered too different to be assigned to the AMR super population (9 Non-Nicoyan, 13 Nicoyan). When analyzing the joint PCA compared to the projection, there are no apparent outlier samples. Thus, we will proceed for now to consider all samples as part of the AMR super population and continue with the IBD analysis. 
+
+## 1. MAF > 5%
+**Command: --maf 0.05)**
+
+## 2. Pruning
+
+**Command: --indep-pairwise 200 100 0.2**
+
+
+```{bash, eval=FALSE}
+
+~/KoborLab/kobor_space/ppascualli/Programs/plink  \
+--bfile ../CRELES_pc3 \
+--maf 0.05 \
+--indep-pairwise 200 100 0.2 \
+--make-bed \
+--out 1_IBD_CRELES
+
+## 206574 of 310254 variants removed.
+
+```
+
+
+## 3. IBD computation
+
+Now, the IBD calculation will be estimated using plink 1.9. The threshold suggested on the White paper of our Vanderbilt collaborators is a PI_HAT > 0.2, for any pair of samples with a 0.2 score one should be dropped. The PI_HAT (...[continue, read more about what does pi-hat works and what does it tell you])
+
+**Command: --genome gz full --ppc-gap **
+
+The *--genome* flag computes the IBD calculation, with the following information: 
+
+
+- FID1	Family ID for first sample
+
+
+- IID1	Individual ID for first sample
+
+
+- FID2	Family ID for second sample
+
+
+- IID2	Individual ID for second sample
+
+
+- RT	Relationship type inferred from .fam/.ped file
+
+
+- EZ	IBD sharing expected value, based on just .fam/.ped relationship
+
+
+- Z0	P(IBD=0)
+
+
+- Z1	P(IBD=1)
+
+
+- *Z2*	P(IBD=2)
+
+
+- *PI_HAT*	Proportion IBD, i.e. P(IBD=2) + 0.5*P(IBD=1)
+
+
+- *PHE*	Pairwise phenotypic code (1, 0, -1 = AA, AU, and UU pairs, respectively)
+
+
+- *DST*	IBS distance, i.e. (IBS2 + 0.5*IBS1) / (IBS0 + IBS1 + IBS2)
+
+
+- *PPC*	IBS binomial test
+
+
+- *RATIO	HETHET* : IBS0 SNP ratio (expected value 2)
+
+
+Using the gz option has the output gzipped. The full option adds a lot of other information onto the output file: 
+
+
+- *IBS0*	Number of IBS 0 nonmissing variants
+
+
+- *IBS1*	Number of IBS 1 nonmissing variants
+
+
+- *IBS2*	Number of IBS 2 nonmissing variants
+
+
+- *HOMHOM*	Number of IBS 0 SNP pairs used in PPC test
+
+
+- *HETHET*	Number of IBS 2 het/het SNP pairs used in PPC test
+
+
+```{bash, eval=FALSE}
+
+~/KoborLab/kobor_space/ppascualli/Programs/plink  \
+--bfile 1_IBD_CRELES \
+--genome gz full \
+--make-bed \
+--out 2_IBD_CRELES
+
+```
+
+
+Eight pair of samples show a pi_hat higher than 0.2 (shown below). 
+
+
+```{r}
+
+CRELES.IBD <- read.table("/home/BCRICWH.LAN/Paola.Arguello/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/IBD_subroutine/2_IBD_CRELES.genome", header = TRUE)
+library(knitr)
+kable(as.data.frame(CRELES.IBD[CRELES.IBD$PI_HAT >= 0.1875,c(2,4,10)]))
+
+
+```
+
+Now, we chose one sample of each pair to remove. Special code provided by Rachel and adapted by Nicole Gladish to remove the highly related samples in all the dataframe to minimize the number of removed samples. 
+
+```{r, eval=FALSE}
+
+## Create a subset of the samples that have a pi_hat higher than 0.1875
+IBD_remove <- CRELES.IBD[CRELES.IBD$PI_HAT >= 0.1875,c(2,4)]
+
+# Chosing one sample to drop:
+## We create a temporary data.frame with the IBD threshold to calculate the
+## highly related samples. It is important to have the rows be characters!
+plink_IBD <- IBD_remove[,1:2]
+plink_IBD$IID1 <- as.character(plink_IBD$IID1)
+plink_IBD$IID2 <- as.character(plink_IBD$IID2)
+
+
+library(dplyr)
+related.samples <- NULL
+while ( nrow(plink_IBD) > 0 ) {
+  
+  # count the number of occurrences of each and take the top one
+  sample.counts <- arrange(plyr::count(c(plink_IBD$IID1, plink_IBD$IID2)), -freq)
+  rm.sample <- sample.counts[1, 'x']
+  cat("Removing sample", as.character(rm.sample), 'too closely related to', sample.counts[1, 'freq'],'other samples.\n')
+  
+  # remove from plink_IBD and add to list
+  plink_IBD <- plink_IBD[plink_IBD$IID1 != rm.sample & plink_IBD$IID2 != rm.sample,]
+  related.samples <- c(as.character(rm.sample), related.samples)
+}
+
+## Getting the FID information to create a txt of the highly related samples 
+# to use in further analysis
+related.df <- unique(CRELES.IBD[CRELES.IBD$IID1 %in% related.samples,c(1,2)])
+write.table(related.df, 
+          file = "~/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/IBD_subroutine/CRELES_related_samples_IBD.txt",
+          quote = FALSE, row.names = FALSE, sep = "\t", col.names = FALSE)
+
+```
+
+
+For sanity check, we verify that the samples removed by Nicole were similar to the ones we are removing. Nicole removed 10 samples in total, from her IBD calculation: *4162, 4051,3909, 3714-R2, 1618, 1578, 1540, 1550, 86, 2236-R2*. Out of those (86, and 2236-R2) were previously removed on the Fhet threshold and thus were not evaluated for IBD in my analysis. One of them was not found to be highly related to any other sample (3909).
+
+```{bash, eval=FALSE}
+## Removing highly-related individuals for sanity check 
+~/KoborLab/kobor_space/ppascualli/Programs/plink  \
+--bfile 2_IBD_CRELES \
+--remove CRELES_related_samples_IBD.txt \
+--genome gz full \
+--make-bed \
+--out 3_IBD_CRELES
+
+## 310254 variants and 486 people pass filters and QC.
+
+```
+
+Visualization before and after removal of 7 highly related individuals.
+
+```{r}
+CRELES.IBD <- read.table("/home/BCRICWH.LAN/Paola.Arguello/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/IBD_subroutine/2_IBD_CRELES.genome", header = TRUE)
+library(ggplot2)
+library(ggpubr)
+a <- ggplot(CRELES.IBD, aes(x = PI_HAT)) 
+a <- a + geom_histogram(fill = "turquoise3",position = "identity",bins = 25) + ggtitle("Before")
+
+CRELES.IBD.after <- read.table("/home/BCRICWH.LAN/Paola.Arguello/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/IBD_subroutine/3_IBD_CRELES.genome", header = TRUE)
+b <- ggplot(CRELES.IBD.after, aes(x = PI_HAT)) 
+b <- b + geom_histogram(fill = "turquoise3",position = "identity",bins = 25) + ggtitle("After")
+
+ggarrange(a,b)
+
+### Sanity Check to verify there are no highly related individuals:
+# CRELES.IBD.after[CRELES.IBD.after$PI_HAT >= 0.1875,c(2,4,10)]
+## none!
+```
+
+
+Finally, we remove the highly related individuals.
+
+```{bash, eval=FALSE}
+### ------------------------- From our main QC pipeline ----------------- ###
+## Removing highly-related individuals also from our main QC (pc) pipeline:
+cd ~/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/
+
+~/KoborLab/kobor_space/ppascualli/Programs/plink  \
+--bfile CRELES_pc3 \
+--remove ./IBD_subroutine/CRELES_related_samples_IBD.txt \
+--make-bed \
+--out CRELES_pc4
+## 460737 variants and 486 people pass filters and QC.
+
+```
+
+
+# Genetic PCs 
+
+Now, we use the pre-cleaned data (CRELES_pc4 dataset) to visualize the genetic PCs, but after removing the related individuals obtained from the IBD analysis. 
+
+```{bash, eval=FALSE}
+
+cd /home/BCRICWH.LAN/paola.arguello/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/Genetic_PCs
+
+cp ../PCA_subroutine_pop-stratification/5M_CRELES_p2.pruned* .
+
+## First, we take out the IBD individuals from our highly-informative QC:
+~/KoborLab/kobor_space/ppascualli/Programs/plink  \
+--bfile 5M_CRELES_p2.pruned \
+--remove ../IBD_subroutine/CRELES_related_samples_IBD.txt \
+--make-bed \
+--out CRELES_informative_noIBD
+##  99616 variants and 486 people pass filters and QC.
+
+## Now we run the PCA
+~/KoborLab/kobor_space/ppascualli/Programs/plink  \
+--bfile CRELES_informative_noIBD \
+--pca \
+--out CRELES_final_pCs
+## 99616 variants and 486 people pass filters and QC.
+
+rm 5M_CRELES_p2.pruned*
+
+```
+
+```{r}
+## Now we prepare the data to plot the PCA: ----------------------------------
+eigenvec <- read.table("/home/BCRICWH.LAN/Paola.Arguello/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/Genetic_PCs/CRELES_final_pCs.eigenvec")
+colnames(eigenvec) <- c(c("FID", "IID"), paste0("PC", seq(1,20)))
+CRELES.pop <- read.table("/home/BCRICWH.LAN/Paola.Arguello/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/CRELES_pop_meta.txt", sep="\t", header=TRUE)
+
+## Merging meta file with eigenvec:
+eigenvec.pop <- merge(eigenvec,CRELES.pop, by="IID")
+
+## PLotting:
+library(ggplot2)
+library(ggpubr)
+a <- ggplot(eigenvec.pop, aes(PC1,PC2,color=Pop)) + geom_point()  + ggtitle("CRELES preQC")
+b <- ggplot(eigenvec.pop, aes(PC2,PC3,color=Pop)) + geom_point() + ggtitle("CRELES preQC")
+c <- ggplot(eigenvec.pop, aes(PC1,PC2,color=Pop)) + geom_point()  + ggtitle("CRELES preQC")
+d <- ggplot(eigenvec.pop, aes(PC2,PC3,color=Pop)) + geom_point()  + ggtitle("CRELES preQC")
+
+a
+b
+
+ggarrange(c,d, ncol = 2, nrow = 1)
+
+```
+
+
+
+# Batch Analysis Subroutine
+
+*From the White Paper:* 
+
+"This subroutine is to be performed after PCA because it must be an ancestry-aware analysis  with PCs as covariates. Batch analysis can be used to identify plating artifacts, genotype calling batch artifacts, and imputation batch failures. **It is important that batches are randomized with respect to ancestry and phenotype, otherwise it is impossible to separate batch effects from population differentiation or true associations.** "
+
+For CRELES we will correct for genotyping plate and wave of data collection. Below is a representation of what a chip and a plate are when talking about DNA methylation arrays 
+![schematic figure](./Chip_Plate_schematic.png)
+
+0. Investigation of technical variation
+
+1. Create CRELES batches files
+
+```{r, eval=FALSE, echo=FALSE}
+
+## THIS SCRIPT IS TO MERGE THE WAVE INFO THAT IS INCOMPLETE!
+##### Create a CRELES batches file ----------------------------
+## We will correct for both wave and plate. To do this, we need to get the information 
+## from  different sources and merge them to create the file that will be later used for the
+## batch correction analysis
+
+## Get UBC-id and id_ucr
+load("~/KoborLab/kobor_space/ngladish/CRELES/GSA/CRELESG_Sample_Table.RData")
+sample.table <- CRELESG_Sample_Table[,c(68,69)]
+colnames(sample.table) <- c("UBC_id", "id")
+
+## Get UBC-id and wave
+load("~/KoborLab/kobor_space/smerrill/CRELES/CRELESNCm.RData")
+p.dat <- pData(CRELESNCm)
+waves <- p.dat[,c(9,13)]
+colnames(waves) <- c("UBC_id", "waves")
+
+## Merge by UBC-id
+wave_ids <- merge(waves, sample.table, by="UBC_id")
+
+## Subset to wave and id_ucr
+wave_ids <-  wave_ids[,2:3]
+
+## Load sample sheet to get id_ucr (Sample_ID) and the sample plate
+CRELES_GSA_ss <- read.csv("~/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/Batch_subroutine/Nicoya_GSA_FINAL_samplesheet.csv",
+                          header = TRUE)
+sampleSheet <- CRELES_GSA_ss[,c(1,6)]
+colnames(sampleSheet) <- c("id", "Plate")
+
+## Merge with sample sheet (ss) by id_ucr
+CRELES_batches <- merge(sampleSheet, wave_ids, by="id")
+
+## Save to use for batch correction:
+write.table(CRELES_batches, file = "~/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/Batch_subroutine/CRELES_GSA-batches.txt",
+            row.names = FALSE, col.names = TRUE, quote = FALSE)
+
+#####----------------- Create new .fam files -----------------#####
+### Now we need to create new fam phenotype files for each of the batches 
+
+## Load the current phenotype file (.fam)
+CRELES.fam <- read.table(file = "~/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/Batch_subroutine/CRELES_pc4_original.fam",
+                         header = FALSE)
+
+##  We first merge the data sets together by IID
+colnames(CRELES.fam) <- c("FID", "IID", "ID_dad", "ID_mom", "Sex", "EmptyPhen")
+colnames(CRELES_batches) <- c("IID", "Plate", "Wave")
+
+CRELES.batches.fam <- merge(CRELES_batches, CRELES.fam,  by="IID")
+
+## Now we separate them into different files, one per run that will be done (waves and Plates)
+CRELES.Plates<- CRELES.batches.fam[,c(4,1,5:7,2)]
+CRELES.Waves <- CRELES.batches.fam[,c(4,1,5:7,3)]
+
+### Transform batches to phenotype format (1=controls, 2=cases) ----------
+## *Waves* already have the two allowed values (1 for controls and 2 for cases), thus no further action
+## is needed and we can save the file. 
+unique(CRELES_batches$Wave) ## already in the right format, just 2 waves 
+write.table(CRELES.Waves, file="~/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/Batch_subroutine/UPDATE/CRELES_waves-batch.fam", 
+            col.names =FALSE, quote = FALSE, row.names = FALSE)
+
+## However, we have 7 different *plates*. Then, for each we will do a different phenotype file for each
+## assigning the rest to controls
+plates <- unique(CRELES.Plates$Plate) ## we have 7 batches, so for each we will do a different file
+
+## Function to change to case and control each plate 
+save.plate.batches <- function(index){
+  CRELES.tmp <- CRELES.Plates
+  CRELES.tmp$Plate <- as.character(CRELES.tmp$Plate)
+  ## Assign all the other plates to control (1)
+  CRELES.tmp$Plate[CRELES.tmp$Plate != plates[index]] <- "1"
+  
+  ## And the current plate[] to case (2)
+  CRELES.tmp$Plate[CRELES.tmp$Plate == plates[index]] <- "2"
+  
+  write.table(CRELES.tmp, file=paste0("~/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/Batch_subroutine/UPDATE/",
+                                        "CRELES_plate-",
+                                        as.character(plates[index]),
+                                        "_batch.fam"), 
+              col.names =FALSE, quote = FALSE, row.names = FALSE)
+  
+  CRELES.tmp <- vector()
+  
+}
+
+## We run the function for all the batches
+save.plate.batches(1)
+save.plate.batches(2)
+save.plate.batches(3)
+save.plate.batches(4)
+save.plate.batches(5)
+save.plate.batches(6)
+save.plate.batches(7)
+
+```
+
+2. Create CRELES covariates files 
+```{r, eval=FALSE}
+
+## Loading the genetic PCs:
+CRELES_final_subset <-read.table("~/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/Genetic_PCs/CRELES_final_pCs.eigenvec", header = FALSE)
+colnames(CRELES_final_subset) <- c(c("FID", "IID"), paste0("PC", seq(1,20)))
+
+## Loading the fam file to get the sex information:
+CRELES.fam <- read.table(file = "~/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/Genetic_PCs/CRELES_informative_noIBD.fam",
+                         header = FALSE)
+colnames(CRELES.fam) <- c("FID", "IID", "ID_dad", "ID_mom", "Sex", "EmptyPhen")
+
+## Merging the dataframes 
+covariates <- merge(CRELES.fam[,c(2,5)], CRELES_final_subset[,c(1:12)], by="IID")
+
+## Save as new file 
+write.table(covariates[,c(3,1,2,4:13)], file="~/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/Batch_subroutine/CRELES_covariates.txt",
+            quote = FALSE, row.names = FALSE)
+
+```
+
+3. Perform the logistic regression analysis per batch
+
+3.1: Per plate: 
+
+It should be performed using non-LD pruned data and within ancestry groups. 
+```{bash, eval=FALSE}
+
+## Note: there were only 466 samples that we could get all the different batches information from
+## and that match in ID with the other sample sheets (in the methylation data). These differences in 
+## samples forbid us from run the batch analysis. Thus, only for this step to get the batch-associated SNPs
+## I will keep only those 466 for the different analysis and then, remove the batch-associated SNPs from the 
+## 486 samples file (CRELES_pc4 -> CRELES_pc5)
+
+~/KoborLab/kobor_space/ppascualli/Programs/plink2  \
+--bfile CRELES_pc4 \
+--keep all_batches_info_486_samples.txt \
+--make-bed \
+--out CRELES_486_tmp_batches
+## 466 samples (268 females, 198 males; 466 founders) remaining after main
+
+
+## Running a quick bash script to loop through the all the fam files of the batches and running the logistic analysis 
+
+#### ------ plates batches ------- ####
+## --- start
+plates=("WG5959625"
+        "WG6709108"
+        "WG6709235"
+        "WG6709283"
+        "WG6709400"
+        "WG6709472"
+        "WG6709477")
+
+
+for i in {0..6}
+do
+cp  "CRELES_plate-"${plates[$i]}"_batch.fam" "CRELES_486_tmp_batches.fam"
+~/KoborLab/kobor_space/ppascualli/Programs/plink --bfile CRELES_486_tmp_batches --logistic hide-covar --covar CRELES_covariates.txt
+mv plink.assoc.logistic ${plates[$i]}"_batch_plink.assoc.logistic"
+rm CRELES_486_tmp_batches.fam
+
+done
+
+## end-----
+
+
+```
+
+3.2: Per wave:
+
+```{bash, eval=FALSE}
+
+cp  CRELES_waves-batch.fam CRELES_486_tmp_batches.fam
+
+~/KoborLab/kobor_space/ppascualli/Programs/plink --bfile CRELES_486_tmp_batches --logistic hide-covar --covar CRELES_covariates.txt
+
+mv plink.assoc.logistic Waves-batch_plink.assoc.logistic
+rm CRELES_486_tmp_batches.fam
+
+```
+
+
+4. Analyse the SNPs that are significantly associated with the different batches 
+
+```{r, eval=FALSE}
+plates <- c("WG5959625",
+            "WG6709108",
+            "WG6709235",
+            "WG6709283",
+            "WG6709400",
+            "WG6709472",
+            "WG6709477")
+get.batch.snps <- function(index){
+  plate_tmp <- na.omit(read.table(file=paste0("~/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/Batch_subroutine/UPDATE/",
+                                              plates[index],
+                                              "_batch_plink.assoc.logistic"),
+                                  header = TRUE))
+  
+  bad_snps <- plate_tmp$SNP[plate_tmp$P <= 0.01]
+  print(length(bad_snps))
+  return(as.character(bad_snps))
+}
+plate1 <- get.batch.snps(1) #3469
+plate2 <- get.batch.snps(2) #4042
+plate3 <- get.batch.snps(3) #3402
+plate4 <- get.batch.snps(4) #4178
+plate5 <- get.batch.snps(5) #4351
+plate6 <- get.batch.snps(6) #3909
+plate7 <- get.batch.snps(7) #3807
+
+## Now we get the snps that were found to be associated to wave:  ---------------
+waves <- na.omit(read.table(file=paste0("~/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/Batch_subroutine/UPDATE/Waves-batch_plink.assoc.logistic"),
+                            header = TRUE))
+waves.bad_snps <- waves$SNP[waves$P <= 0.01]
+
+## Merging all the bad SNPs from the different batches --------------------------
+all_bad_SNPs <- unique(c(plate1, plate2, plate3, plate4, plate5, plate6, plate7, waves.bad_snps)) 
+## 30,369 unique bad snps
+
+write.table(all_bad_SNPs, file = "~/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/Batch_subroutine/UPDATE/SNPs_batch-associated.txt",
+            quote = FALSE, row.names = FALSE, col.names = FALSE)
+
+```
+
+# Pre-imputation QC
+
+We remove the SNPs that showed to be significantly related to the batches in the batch-analysis sobroutine. Approximately we got about 20K SNPs per plate, for a total of 24,708 SNPs that will be removed. 
+
+```{bash, eval=FALSE}
+
+~/KoborLab/kobor_space/ppascualli/Programs/plink \
+--bfile ./CRELES_pc4 \
+--exclude ./Batch_subroutine/SNPs_batch-associated.txt \
+--make-bed \
+--out ./CRELES_pc5
+
+#43,4493 variants and 486 people pass filters and QC.
+
+
+```
+
+## Hardy-Weinberg calculations
+
+Using the non-LD pruned data, we will estimate the HW equilibrium within ancestry groups. In the case of CRELES, they are all included in the big AMR superpopulation group. Thus, will be calculated together. 
+
+
+```{bash, eval=FALSE}
+~/KoborLab/kobor_space/ppascualli/Programs/plink \
+--bfile CRELES_pc5 \
+--hardy gz \
+--make-bed \
+--out CRELES_pc6
+
+##434,493 variants and 486 people pass filters and QC.
+
+
+```
+
+Now, we proceed to inspect the data visually with a QQ plot to see how well does it follows the expected normal distribution of the HW-equilibrium. 
+
+```{r, eval=FALSE}
+HWeq <- read.table("~/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/CRELES_pc6.hwe",
+                   header = TRUE)
+
+## Plot
+qqnorm(HWeq$P)
+qqline(HWeq$P)
+
+## Find SNPs that don't follow the HW-eq (HW p-val > 10^-10)
+
+## Saving the SNPs that do not follow the HWeq in for further analysis
+no_HWeq <- HWeq$SNP[HWeq$P <= 10^-10] ## remove 128 SNPs
+
+write.table(no_HWeq, file="~/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/CRELES_pc6_SNPs_no-HWeq.txt",
+            row.names = FALSE, col.names = FALSE, quote = FALSE)
+
+
+
+```
+
+Finally, we filter out the SNPs that do not follow this equilibrium. 
+
+```{bash, eval=FALSE}
+
+~/KoborLab/kobor_space/ppascualli/Programs/plink \
+--bfile CRELES_pc6 \
+--exclude CRELES_pc6_SNPs_no-HWeq.txt \
+--make-bed \
+--out CRELES_pc7
+
+## 43,4336 variants and 486 people pass filters and QC.
+
+
+```
+
+
+# Global Genetic Ancestry
+## Merge CRELES and 1KGP 
+
+Using the previously downladed 1KGP reference, we will merge the pre-imputed QCed data to conduct the global ancestry analysis. 
+
+a. Extract the genetic variants left on the last SNP of the pre-imputation QC from the 1KGP reference (CRELES_pc7)
+
+```{bash, eval=FALSE}
+
+cd /home/BCRICWH.LAN/paola.arguello/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC
+
+## Create the file with the snps that will be extracted from 1KGP
+cut -f2 CRELES_pc7.bim  > CRELES_pc7_variants.txt
+
+cd Global_Ancestry_Analysis
+
+~/KoborLab/kobor_space/ppascualli/Programs/plink2  \
+--bfile ~/KoborLab/kobor_space/ppascualli/Files/CRELES/genotyping_references/1KGP/1KGP \
+--extract ../CRELES_pc7_variants.txt \
+--make-bed \
+--out 1_KGP_CRELESpc7
+
+## --extract: 247,042 variants remaining.
+
+
+```
+
+b. Updating naming convention 
+
+```{bash, eval=FALSE}
+
+## Checking and correcting possible chromosome mismatches:
+awk 'BEGIN {OFS="\t"} FNR==NR {a[$2]=$1; next} ($2 in a && a[$2] != $1) {print a[$2],$2}' ../CRELES_pc7.bim 1_KGP_CRELESpc7.bim | sed -n '/^[XY]/!p' > 2_1KGP_CRELESpc7.toUpdateChr
+## NOTE: 10264 chromosome potential mismatches
+
+
+## Creating the plink files:
+~/KoborLab/kobor_space/ppascualli/Programs/plink \
+--bfile 1_KGP_CRELESpc7 \
+--update-chr 2_1KGP_CRELESpc7.toUpdateChr 1 2 \
+--make-bed \
+--out 2_1KGP_CRELESpc7.updatedChr
+
+## -update-chr: 10264 values updated.
+## 247,042 variants and 2504 people pass filters and QC.
+
+```
+
+c. Correct possible allele mismatches
+
+```{bash, eval=FALSE}
+
+## Possible position mismatches:
+awk 'BEGIN {OFS="\t"} FNR==NR {a[$2]=$4; next} ($2 in a && a[$2] != $4) {print a[$2],$2}' ../CRELES_pc7.bim 1_KGP_CRELESpc7.bim > 3_KGP_CRELESpc7.toUpdatePos
+##-NOTE: 42 possible position mismatches
+
+## Possible allele flips: 
+awk 'BEGIN {OFS="\t"} FNR==NR {a[$1$2$4]=$5$6; next} ($1$2$4 in a && a[$1$2$4] != $5$6 && a[$1$2$4] != $6$5) {print $2}' \
+../CRELES_pc7.bim 1_KGP_CRELESpc7.bim > 3_KGP_CRELESpc7.toFlip
+##-NOTE: 117,721 possible allele flips
+
+## Update posistions and flip alleles
+~/KoborLab/kobor_space/ppascualli/Programs/plink \
+--bfile 2_1KGP_CRELESpc7.updatedChr \
+--update-map 3_KGP_CRELESpc7.toUpdatePos 1 2 \
+--flip 3_KGP_CRELESpc7.toFlip \
+--make-bed \
+--out 3_KGP_CRELESpc7.flipped
+
+## --update-map: 42 values updated.
+## --flip: 117,721 SNPs flipped.
+## 247,042 variants and 2504 people pass filters and QC.
+
+
+```
+
+d. Remove allele mismatches
+
+```{bash, eval=FALSE}
+
+## Possible allele mismatches
+awk 'BEGIN {OFS="\t"} FNR==NR {a[$1$2$4]=$5$6; next} ($1$2$4 in a && a[$1$2$4] != $5$6 && a[$1$2$4] != $6$5) {print $2}' \
+../CRELES_pc7.bim 3_KGP_CRELESpc7.flipped.bim > 4_KGP_CRELESpc7.mismatch 
+##-NOTE: 4,910 possible allele mismatches
+
+## Remove allele mismatches that couldn't be corrected by previous steps
+~/KoborLab/kobor_space/ppascualli/Programs/plink \
+--bfile 3_KGP_CRELESpc7.flipped \
+--exclude 4_KGP_CRELESpc7.mismatch  \
+--make-bed \
+--out 4_KGP_CRELESpc7.clean
+
+##--exclude: 242,132 variants remaining.
+## 242,132 variants and 2504 people pass filters and QC.
+
+
+```
+
+SUMMARY: 1KGP variants filter process (pre-merging)
+
+```{r}
+df<-data.frame(sample_num_remaining=c(84358431, 247042, 242132), 
+               filter=c("1KGP variants","CRELES overlap", "Allele mismatches" ))
+df$sample_num_lost<-c(0,sapply(2:nrow(df), function(x) df$sample_num_remaining[x-1]-df$sample_num_remaining[x]))
+
+df$filter<-factor(df$filter, rev(df$filter))
+
+ggplot(df)+
+  geom_bar(aes(filter,-sample_num_remaining), stat="identity", fill="darkolivegreen3", color="darkolivegreen3", alpha = 0.5)+
+  geom_bar(aes(filter,sample_num_lost), stat="identity",fill="firebrick2", color="firebrick2", alpha = 0.5)+
+  geom_text(aes(x=filter, y=-min(sample_num_remaining),  label=comma(sample_num_remaining,digits = 0)), size = 5)+
+  geom_text(aes(x=filter, y=max(sample_num_lost)/1.5,  label=(comma(sample_num_lost, digits = 0))), size = 5)+
+  geom_hline(yintercept=0)+
+  coord_flip()+theme_bw()+ylab("")+xlab("")+ggtitle("1KGP, PCA-specific QC")+
+  theme(axis.line = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text.x = element_blank(),
+        axis.text.y = element_text(colour = "grey20", size=15),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        plot.title = element_text(face="bold", size = 15, hjust = 0.5)) +
+  scale_x_discrete(position = "top") 
+```
+
+e. Subsetting CRELES down to overlapping variants
+
+```{bash, eval=FALSE}
+
+## Create the file with the snps that will be extracted from 1KGP
+cut -f2 4_KGP_CRELESpc7.clean.bim  > 4_KGP_CRELESpc7.clean_variants.txt
+
+~/KoborLab/kobor_space/ppascualli/Programs/plink \
+--bfile  ../CRELES_pc7 \
+--extract 4_KGP_CRELESpc7.clean_variants.txt  \
+--make-bed \
+--out CRELESpc7_KGP_filtered
+
+## 242,132 variants and 486 people pass filters and QC.
+
+
+```
+
+
+f. Merging 1KGP and CRELES (pc7)
+
+```{bash, eval=FALSE}
+~/KoborLab/kobor_space/ppascualli/Programs/plink \
+--bfile ./CRELESpc7_KGP_filtered \
+--bmerge 4_KGP_CRELESpc7.clean.bed 4_KGP_CRELESpc7.clean.bim 4_KGP_CRELESpc7.clean.fam \
+--make-bed \
+--out 5_CRELESpc7.merged.1KGP
+
+##-NOTE: 242,132 variants and 2990 people pass filters and QC.
+## 242,132 markers loaded from ./CRELESpc7_KGP_filtered.bim.
+## 242,132 markers to be merged from 4_KGP_CRELESpc7.clean.bim.
+
+```
+
+
+## Sanity Check: MAF plots within ancestry
+
+With the merged subset of 1KGP and CRELES created on the previous point, we will calculate MAF per ancestry.
+
+```{bash, eval=FALSE}
+
+cd ~/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/MAFplots
+
+cp ~/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/Global_Ancestry_Analysis/5_CRELESpc7.merged.1KGP*  ./
+
+### Split by ancestry to calculate their MAF --------------
+## Code is saved on the calculate_MAF.sh, running: bash calculate_MAF.sh 
+ancestry=("AMR" "EUR" "SAS" "EAS" "AFR" "CRELES")
+
+for i in {0..5}
+do
+    ~/KoborLab/kobor_space/ppascualli/Programs/plink  --bfile  5_CRELESpc7.merged.1KGP --keep  ${ancestry[$i]}"_samples" --freq --out ${ancestry[$i]}
+  
+done
+
+
+rm 5_CRELESpc7.merged.1KGP.*
+
+```
+
+### MAF by ancestry
+Plotting the frequency of the different values of MAF by ancestry
+
+```{r}
+## Loading the frq file: 
+ancestry <- c("AMR","EUR", "AFR", "CRELES")
+
+get.MAF.percentages <- function(index){
+  MAF_tmp <- na.omit(read.table(file=paste0("~/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/MAFplots/",
+                                            ancestry[index], ".frq"), header = TRUE))
+  
+  ancestry_MAF <- data.frame(MAF=c("0", "0 - 0.01", "0.01 - 0.025", "0.025 - 0.05", "0.05 - 0.1", 
+                                   "0.1 - 0.2", "0.2 - 0.3", "0.3 - 0.4", "0.4 - 0.5"))
+  ancestry_MAF$percentage <- c((length(MAF_tmp[MAF_tmp$MAF == 0,2]) / length(MAF_tmp$MAF))*100,
+                   (length(MAF_tmp[MAF_tmp$MAF > 0 & MAF_tmp$MAF <= 0.01,2]) / length(MAF_tmp$MAF))*100,
+                   (length(MAF_tmp[MAF_tmp$MAF > 0.01 & MAF_tmp$MAF <= 0.025,2]) / length(MAF_tmp$MAF))*100,
+                   (length(MAF_tmp[MAF_tmp$MAF > 0.025 & MAF_tmp$MAF <= 0.05,2]) / length(MAF_tmp$MAF))*100,
+                   (length(MAF_tmp[MAF_tmp$MAF > 0.05 & MAF_tmp$MAF <= 0.1,2]) / length(MAF_tmp$MAF))*100,
+                   (length(MAF_tmp[MAF_tmp$MAF > 0.1 & MAF_tmp$MAF <= 0.2,2]) / length(MAF_tmp$MAF))*100,
+                   (length(MAF_tmp[MAF_tmp$MAF > 0.2 & MAF_tmp$MAF <= 0.3,2]) / length(MAF_tmp$MAF))*100,
+                   (length(MAF_tmp[MAF_tmp$MAF > 0.3 & MAF_tmp$MAF <= 0.4,2]) / length(MAF_tmp$MAF))*100,
+                   (length(MAF_tmp[MAF_tmp$MAF > 0.4 & MAF_tmp$MAF <= 0.5,2]) / length(MAF_tmp$MAF))*100)
+  
+  ancestry_MAF$ethnicity <- ancestry[index]
+  
+  return(ancestry_MAF)
+}
+
+ethnicity_MAF.df <- rbind(get.MAF.percentages(1),
+                          get.MAF.percentages(2),
+                          get.MAF.percentages(3),
+                          get.MAF.percentages(4))
+
+library(ggplot2)
+ggplot(data=ethnicity_MAF.df, aes(x=MAF, y=percentage, fill=ethnicity)) +
+  geom_bar(stat="identity", position=position_dodge()) +
+  scale_fill_brewer(palette="Paired")+
+  theme_minimal()
+
+```
+
+### Allele Frequency contrasted to 1KGP 
+
+We do this step to verify that there are no allele mismatches. 
+
+```{r}
+AMR_af <- na.omit(read.table(file=paste0("~/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/MAFplots/",
+                                          "AMR", ".frq"), header = TRUE))
+AMR_af$ethnicity <- "AMR (1KGP)"
+
+CRELES_af <- na.omit(read.table(file=paste0("~/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/MAFplots/",
+                                          "CRELES", ".frq"), header = TRUE))
+CRELES_af$ethnicity <- "CRELES"
+
+snps.intersect <- intersect(CRELES_af$SNP, AMR_af$SNP)
+
+AF <- rbind(AMR_af[AMR_af$SNP %in% snps.intersect,], CRELES_af[CRELES_af$SNP %in% snps.intersect,])
+
+
+plot(x=AF[AF$ethnicity=="AMR (1KGP)",5], y=AF[AF$ethnicity=="CRELES",5],
+     main="1KGP versus CRELES allele frequencies",
+     xlab="AMR allele freq",
+     ylab="CRELES allele freq")
+
+
+```
+
+
+## ADMIXTURE (Running on server)
+
+Running ADMIXTURE software (*D.H. Alexander, J. Novembre, and K. Lange. Fast model-based estimation of ancestry in unrelated individuals. Genome Research, 19:1655–1664, 2009.*). Using 3 as the number of ancestral populations expected to contribute to the admixture on this population. 
+
+### Identifying homogeneous populations 
+
+In order to conduct RFMix analysis, we need to identify our references. References must be the same number for each ancestry, in this case we will use 1KGP populations: YRI, CEU and PEL as African, European and Native American references, respectively. Thus, we will do a global genetic ancestry investigation with ADMIXTURE to select 10 individuals of each ancestry with > 90 % of their ancestry. 
+
+```{bash, eval=FALSE}
+
+## Important files:
+CRELESpc7_KGP_filtered ## CRELES pc7 subset to overlapping 1KGP variants
+4_KGP_CRELESpc7.clean.bed ## 1KGP subset to CRELES pc7
+5_CRELESpc7.merged.1KGP  ## merged file of 1KGP and CRELES
+
+## First, we keep only the 3 populations we want to analyze:YRI, CEU and PEL
+~/KoborLab/kobor_space/ppascualli/Programs/plink  \
+--bfile  ../4_KGP_CRELESpc7.clean \
+--keep  ./sample_info_files/sample_info_1KGP_YRI-CEU-PEL.txt \
+--make-bed \
+--out YRI-CEU-PEL_pc7-cleaned
+
+## Running ADMIXTURE for 3 ancestral populations, to get the heterogeneity in PEL
+## Plink file with data
+## N: Number of ancestral populations
+## -B: Flag to get standard errors, from documentation "it will perform point estimation and bootstrap":
+## -jN: Number of threads that ADMIXTURE will run on
+## --cv=N: Cross validation error enabling, the number indicates the n-fold
+
+~/KoborLab/kobor_space/ppascualli/admixture_linux-1.3.0/admixture ./YRI-CEU-PEL_pc7-cleaned.bed 3 -B -j4 
+
+
+```
+
+Selecting the references with more ancestral percentage for CEU, YRI and PEL
+
+```{r, eval=FALSE}
+
+Q <- read.table("~/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/Global_Ancestry_Analysis/ADMIXTURE/Choosing_references/YRI-CEU-PEL_pc7-cleaned.3.Q")
+sample.info <- read.table("~/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/Global_Ancestry_Analysis/ADMIXTURE/sample_info_files/sample_info_1KGP_YRI-CEU-PEL.txt")
+Q$V4 <- sample.info$V4
+Q$V5 <- sample.info$V2
+Q <- na.omit(Q[order(Q$V2),])
+
+### Choosing the more homogeneous individuals per ancestry (N>10)--------------------------------
+colnames(Q) <- c("African", "NativeAmerican", "European", "Ancestry", "ID")
+
+library(tidyverse)
+YRI_ref <- Q %>% filter(Ancestry == "YRI", African > 0.95) %>% arrange(desc(African))  %>% head(20) ## 108
+CEU_ref <- Q %>% filter(Ancestry == "CEU", European > 0.95) %>% arrange(desc(European)) %>% head(20)## 99
+PEL_ref <- Q %>% filter(Ancestry == "PEL", NativeAmerican > 0.95) %>% arrange(desc(NativeAmerican)) %>% head(20) ## 22
+
+## We will keep 20 individuals per reference:
+referece_indexes <- rbind(YRI_ref, CEU_ref, PEL_ref) %>% select(ID)
+
+## Finally, we write them into a csv to use in in further analysis: 
+write.csv(referece_indexes, file="~/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/Global_Ancestry_Analysis/ADMIXTURE/sample_info_files/REF20_YRI-CEU-PEL.txt",
+          row.names = FALSE, quote = FALSE)
+
+## In bash: 
+## grep -w -f REF20_YRI-CEU-PEL.txt Master_sample_info_CRELES_1KGP.txt > sample_info_REF20.txt
+## cat sample_info_REF20.txt sample_info_CRELESpc7.txt > sample_info_REF20_CRELESpc7.txt
+
+## So, we get different sample files: 
+# only CRELES (after pc7 QC): sample_info_CRELESpc7.txt
+# only 20 references: sample_info_REF20.txt
+# CRELES (after pc7 QC) + 20 references: sample_info_REF20_CRELESpc7.txt
+
+## others:
+# All CEU, YRI and PEL: sample_info_1KGP_YRI-CEU-PEL.txt
+# 20 references IDs obtained from this code: REF20_YRI-CEU-PEL.txt
+# All CRELES and all 1KGP: Master_sample_info_CRELES_1KGP.txt
+
+
+
+```
+
+
+### Cross validation for CRELES
+
+```{bash, eval=FALSE}
+
+## Creating the file that contains the 20 references per ancestral population (REF20) and CRELES: 
+cd ~/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/Global_Ancestry_Analysis/ADMIXTURE
+
+~/KoborLab/kobor_space/ppascualli/Programs/plink  \
+--bfile  ../5_CRELESpc7.merged.1KGP \
+--keep  ./sample_info_files/sample_info_REF20_CRELESpc7.txt \
+--make-bed \
+--out REF20_CRELES_pc7-cleaned
+
+## 242,132 variants loaded from .bim file.
+## 2,990 people (1438 males, 1552 females) loaded from .fam.
+## 242,132 variants and 526 people pass filters and QC.
+
+## Cross validation of CRELES:
+for i in {1..5}
+  do 
+~/KoborLab/kobor_space/ppascualli/admixture_linux-1.3.0/admixture --cv ../REF20_CRELES_pc7-cleaned.bed $i -j5 | tee log${i}.out
+
+done
+
+## Running ... 
+
+## Now, we get the cross-validation error per each ancestry analysis to create a plot:
+grep -h CV log*.out
+
+## CV error (K=1): 0.52461
+## CV error (K=2): 0.51656
+## CV error (K=3): 0.50992
+## CV error (K=4): 0.51048
+## CV error (K=5): 0.51262
+
+```
+
+Cross-validation Plot:
+
+```{r}
+
+#### ------------------ Cross validation error ---------------------- ####
+CV.error <- data.frame(cross_val_error=c(0.52461, 0.51656, 0.50992,0.51048, 0.51262), 
+                       K=c(1:5))
+
+library(ggplot2)
+ggplot(CV.error, aes(x=K, y=cross_val_error)) + 
+  geom_point() + geom_line() +
+  xlab("K-mers (No. populations)") + ylab("5-fold cross-validation error")
+
+```
+
+The cross-validation error is at is lowest when 3 ancestries are modelled, as expected based on the history of Costa Rica. Thus, we will proceed to use the result of the 3 ancestries cross validation run (REF20_CRELES_pc7-cleaned.3). It is important to know that these cross-validation errors were calculated on the merged data set that included the 60 sample with more than 95% of homogeneous ancestry, so this probably leads the error to be higher, as what it would be if only CRELES was used. 
+
+
+### Unsupervised plot 
+
+```{r}
+#### ----------------- Unsupervised ADMIXTURE ---------------------- ####
+Q <- read.table("~/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/Global_Ancestry_Analysis/ADMIXTURE/Cross_Val/REF20_CRELES_pc7-cleaned.3.Q")
+sample.info <- read.table("~/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/Global_Ancestry_Analysis/ADMIXTURE/sample_info_files/sample_info_REF20_CRELESpc7.txt")
+Q$V4 <- sample.info$V4
+
+## References + CRELES general plot---------------------
+## V1 - CEU
+## V2 - PEL
+## V3 - YRI
+Q <- na.omit(Q[order(Q$V2),])
+
+## base barplot ---------------
+#barplot(t(as.matrix(Q)), col=c("red", "deepskyblue3", "greenyellow"),
+#       xlab="Individual #", ylab="Ancestry", border=NA)
+
+
+## ggplot ---------------------
+library(tidyverse)
+PEL <- Q %>% filter(V4 == "PEL") %>% arrange(V1) 
+CEU <- Q %>% filter(V4 == "CEU") %>% arrange(V1) 
+YRI <- Q %>% filter(V4 == "YRI") %>% arrange(V1) 
+CR <- Q %>% filter(V4 == "CostaRican") %>% arrange(V1) 
+Nico <- Q %>% filter(V4 == "Nicoyan") %>% arrange(V1) 
+
+Q.new <- rbind(CR, Nico, YRI, PEL, CEU)
+
+Q.new$V5 <- as.character(1:length(Q.new$V1))
+Q.new <- Q.new[, c(1:3,5)]
+colnames(Q.new) <- c("European(CEU)", "NativeAmerican(PEL)","African(YRI)", "ID")
+
+library(ggplot2)
+library(reshape2)
+Q.melt <- melt(Q.new)
+
+ggplot(data=Q.melt, aes(x=as.numeric(ID), y=value, fill=variable)) +
+  geom_bar(stat="identity", width = 1) +
+  scale_fill_manual("Ancestry", values = c("African(YRI)" = "red", 
+                                           "European(CEU)" = "deepskyblue3", 
+                                           "NativeAmerican(PEL)" = "greenyellow")) +
+  theme(axis.text.x=element_text(color = "black", size=3, angle=90),
+        panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank()) +
+  ylab("Ancestry %") + xlab("") 
+
+
+```
+
+
+
+Sanity Check: 
+
+After looking at the references, the CEU looked like all of them had a little of another ancestry. Thus, I decided to check how much did the ancestry predictions varied from the prediction made only for CEU, YRI and PEL to calculate the homogeneous references and the results from the cross validation with the smallest cross-validation error (k=3).
+
+```{r, eval=FALSE}
+
+## 1KGP - choosing references 
+kgp.Q <- read.table("~/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/Global_Ancestry_Analysis/ADMIXTURE/Choosing_references/YRI-CEU-PEL_pc7-cleaned.3.Q", header = FALSE)
+kgp.sample.info <- read.table("~/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/Global_Ancestry_Analysis/ADMIXTURE/sample_info_files/sample_info_1KGP_YRI-CEU-PEL.txt")
+kgp.Q$V4 <- kgp.sample.info$V2
+colnames(kgp.Q) <- c("YRI.kgp", "PEL.kgp","CEU.kgp", "ID")
+
+## CRELES + REF20 (k=3)
+CRELES.Q <- read.table("~/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/Global_Ancestry_Analysis/ADMIXTURE/Cross_Val/REF20_CRELES_pc7-cleaned.3.Q")
+CRELES.sample.info <- read.table("~/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/Global_Ancestry_Analysis/ADMIXTURE/sample_info_files/sample_info_REF20_CRELESpc7.txt")
+CRELES.Q$V4 <- CRELES.sample.info$V2
+colnames(CRELES.Q) <- c("CEU.adx", "PEL.adx","YRI.adx", "ID")
+
+## Merging:
+comparisson <- merge(CRELES.Q, kgp.Q, by="ID")
+
+mean(comparisson$CEU.kgp - comparisson$CEU.adx) ## 0.00915
+mean(comparisson$YRI.kgp - comparisson$YRI.adx) ## -0.00845
+mean(comparisson$PEL.kgp - comparisson$PEL.adx) ## -0.00069
+
+
+```
+
+
+After analyzing the differences mean difference across the ancestries, I realized it is marginally unexistant and the little deviation is likely due to the inclusion of CRELES in the analysis. 
+
+
+### Ancestry proportion comparisson (CR and N) 
+
+```{r}
+#### -------------- Ancestry proportion differences ------------------------ #### 
+
+library(ggplot2)
+library(reshape2)
+
+## reshaping the data: 
+Q.new2 <- rbind(CR, Nico)
+colnames(Q.new2) <- c("African(YRI)", "European(CEU)", "NativeAmerican(PEL)", "ID")
+Q.melt2 <- melt(Q.new2)
+
+
+## bar plot ---------------
+ggplot(Q.melt2, aes(x=variable, y=value, color=ID)) + xlab("Ancestral population") + ylab("Genetic ancestry %") + ylim(c(0,1.019)) +
+  geom_boxplot(
+    
+    # custom boxes
+    alpha=0.2,
+    
+    # Notch?
+    notch=TRUE,
+    notchwidth = 0.8,
+    
+    # custom outliers
+    outlier.colour="red",
+    outlier.fill="red",
+    outlier.size=2
+    
+  )
+
+
+## violin plot -------------
+ggplot(Q.melt2, aes(x=variable, y=value, color=ID)) + geom_violin(position=position_dodge(1))+
+  xlab("Ancestral population") + ylab("Genetic ancestry %")
+
+African <- Q.melt2[Q.melt2$variable == "African(YRI)",]
+European <- Q.melt2[Q.melt2$variable == "European(CEU)",]
+NatAm <- Q.melt2[Q.melt2$variable == "NativeAmerican(PEL)",]
+
+t.test(African$value[African$ID == "CostaRican"], 
+       African$value[African$ID == "Nicoyan"])
+## p-value < 2.2e-16
+
+t.test(European$value[European$ID == "CostaRican"], 
+       European$value[European$ID == "Nicoyan"])
+##  p-value < 8.14e-11
+
+t.test(NatAm$value[NatAm$ID == "CostaRican"], 
+       NatAm$value[NatAm$ID == "Nicoyan"])
+## p-value = 2.2e-16
+
+
+
+
+```
+
+
+### European ancestry % plot
+```{r}
+#### ------------------ European ancestry % plot ----------------------- ####
+CR <- Q %>% filter(V4 == "CostaRican") 
+Nico <- Q %>% filter(V4 == "Nicoyan") 
+
+CRELES.Q <- rbind(CR, Nico) %>% arrange(V1) 
+
+CRELES.Q$V5 <- as.character(1:length(CRELES.Q$V1))
+CRELES.Q <- CRELES.Q[, c(1:3,5)]
+colnames(CRELES.Q) <- c("European(CEU)", "NativeAmerican(PEL)","African(YRI)", "ID")
+
+library(ggplot2)
+library(reshape2)
+CRELES.Q.melt <- melt(CRELES.Q)
+
+ggplot(data=CRELES.Q.melt, aes(x=as.numeric(ID), y=value, fill=variable)) +
+  geom_bar(stat="identity", width = 1) +
+  scale_fill_manual("Ancestry", values = c("African(YRI)" = "red", 
+                                           "European(CEU)" = "deepskyblue3", 
+                                           "NativeAmerican(PEL)" = "greenyellow")) +
+  theme(axis.text.x=element_text(color = "black", size=3, angle=90),
+        panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank()) +
+  ylab("Ancestry %") + xlab("") 
+```
+
+
+
+
+## PCA analysis 
+The script to generate the plots outlined below can also be found and modified: *PCA_global-ancestry_finals_0721.R*
+
+### Informative variants - specific QC
+
+For this analysis, we will use the 1KGP and CRELES (pc7) merged dataset,but won't restrict to the 20 samples selected as more homogeneous with ADMIXTURE (previous step).
+
+*Starting with  242,132*
+
+1. Remove sex chromosomes 
+
+For simplicity and since the XY and MT chromosomes won't interfere with the infered ancestry on the PCA, they are removed from the merged data set, using plink 1.9 command (--not-chr X,Y,XY,25,MT), to avoid any potential issues associated to haploidies and different annotations. 
+
+```{bash, eval=FALSE}
+
+~/KoborLab/kobor_space/ppascualli/Programs/plink \
+--bfile ../../5_CRELESpc7.merged.1KGP \
+--not-chr X,Y,XY,25,MT \
+--make-bed \
+--out 1MI_CRELES_1KGP
+
+## 236711 variants and 2990 people pass filters and QC.
+
+```
+
+
+2. MAF > 5% 
+
+We want the most informative variants to show the stratification between populations, therefore we strigthen the MAF threshold using the plink 1.9 command (--maf 0.05). 
+
+```{bash, eval=FALSE}
+
+~/KoborLab/kobor_space/ppascualli/Programs/plink \
+--bfile 1MI_CRELES_1KGP \
+--maf 0.05 \
+--make-bed \
+--out 2MI_CRELES_1KGP
+
+## 219373 variants and 2990 people pass filters and QC.
+
+```
+
+
+3. Filter strand ambiguous SNPs (AT/GC)
+
+*A T/G SNPs is non-ambiguous as its complement on the other strand is A/C. However, G/C and T/A variants are ambiguous or cryptic as their complementary alleles are C/G and A/T, respectively. This ambiguity means it is more difficult to detect and resolve strand issues for these SNPs* [(Deelen, et al., 2014)](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC4307387/)
+, therefore we removed them to avoid potential issues. 
+
+
+```{bash, eval=FALSE}
+
+grep --perl-regexp "A\tT" 2MI_CRELES_1KGP > 3MI_ATsnps.txt
+grep --perl-regexp "G\tC" 2MI_CRELES_1KGP > 3MI_GCsnps.txt
+cat 3MI_ATsnps.txt 3MI_GCsnps.txt > 3MI_ambiguous_snps.txt
+
+## Zero ambiguous SNPs, no need to run next step
+
+#~/KoborLab/kobor_space/ppascualli/Programs/plink \
+#--bfile 2MI_CRELES_ref20 \
+#--exclude 3MI_ambiguous_snps.txt \
+#--make-bed \
+#--out 3MI_CRELES_ref20
+
+```
+
+
+4. Filter MHC region and long-range LD 
+
+Because high LD regions might give redundancy to the PCA, we removed high LD regions to allow for the most informative regions to be set apart and used. The regions were taken from: https://genome.sph.umich.edu/wiki/Regions_of_high_linkage_disequilibrium_(LD) and the knownly Major Histocompatibility Complex (MHC) was added to the list with its genomic coordinates (chr6, 25-35Mb).
+
+```{bash, eval=FALSE}
+
+~/KoborLab/kobor_space/ppascualli/Programs/plink2 \
+--bfile 2MI_CRELES_1KGP \
+--exclude range ~/KoborLab/kobor_space/ppascualli/Files/CRELES/genotyping_references/high-LD-regions-hg19-GRCh37.txt \
+--make-bed \
+--out 3MI_CRELES_1KGP
+
+##--exclude bed1: 7314 variants excluded.
+## 212059 variants remaining after main filters.ts remaining after main filters.
+
+```
+
+
+5. LD pruning 
+
+Same as before, to reduce redundancy as much as possible we perform two rounds of LD prunning with plink 1.9 (--indep-pairwise 200 100 0.2).
+
+```{bash, eval=FALSE}
+
+## First pruning round: -------------
+~/KoborLab/kobor_space/ppascualli/Programs/plink2 \
+--bfile 3MI_CRELES_1KGP \
+--indep-pairwise 200 100 0.2 \
+--out 4MI_CRELES_1KGP_p1
+
+## 100358/212059 variants removed.
+
+## Now we create the bfiles containing only the prunned variants (1)
+~/KoborLab/kobor_space/ppascualli/Programs/plink2 \
+--bfile 3MI_CRELES_1KGP \
+--extract 4MI_CRELES_1KGP_p1.prune.in \
+--make-bed \
+--out 4MI_CRELES_1KGP_p1.prunned
+
+##--extract: 111701 variants remaining.
+
+## Second pruning round: --------------
+~/KoborLab/kobor_space/ppascualli/Programs/plink2 \
+--bfile  4MI_CRELES_1KGP_p1.prunned \
+--indep-pairwise 200 100 0.2 \
+--out 4MI_CRELES_1KGP_p2
+
+## 122/111701 variants removed.variants removed.
+
+## Now we create the bfiles containing only the prunned variants (2)
+~/KoborLab/kobor_space/ppascualli/Programs/plink2 \
+--bfile 4MI_CRELES_1KGP_p1.prunned \
+--extract 4MI_CRELES_1KGP_p2.prune.in \
+--make-bed \
+--out 5MI_CRELES_1KGP_only_MI_variants
+
+##--extract: 111579 variants remaining.
+
+
+```
+
+
+Summary 
+```{r}
+df<-data.frame(sample_num_remaining=c(242132,236711,219373,219373,212059,111579), 
+               filter=c("Merged 1KGP + CRELES (pc7)","Remove sex chr", "MAF 5%", "Strand ambiguous SNPs", "High LD regions", "LD prunning" ))
+df$sample_num_lost<-c(0,sapply(2:nrow(df), function(x) df$sample_num_remaining[x-1]-df$sample_num_remaining[x]))
+
+df$filter<-factor(df$filter, rev(df$filter))
+
+ggplot(df)+
+  geom_bar(aes(filter,-sample_num_remaining), stat="identity", fill="darkolivegreen3", color="darkolivegreen3", alpha = 0.5)+
+  geom_bar(aes(filter,sample_num_lost), stat="identity",fill="firebrick2", color="firebrick2", alpha = 0.5)+
+  geom_text(aes(x=filter, y=-min(sample_num_remaining),  label=comma(sample_num_remaining,digits = 0)), size = 5)+
+  geom_text(aes(x=filter, y=max(sample_num_lost)/1.5,  label=(comma(sample_num_lost, digits = 0))), size = 5)+
+  geom_hline(yintercept=0)+
+  coord_flip()+theme_bw()+ylab("")+xlab("")+ggtitle("CRELES, PCA-specific QC")+
+  theme(axis.line = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text.x = element_blank(),
+        axis.text.y = element_text(colour = "grey20", size=15),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        plot.title = element_text(face="bold", size = 15, hjust = 0.5)) +
+  scale_x_discrete(position = "top") 
+```
+
+
+### PCA 
+
+We run the PCA on the merged dataset of 1KGP and CRELES that has gone though the most informative variants QC shown on the previous step.
+
+```{bash, eval=FALSE}
+
+~/KoborLab/kobor_space/ppascualli/Programs/plink  \
+--bfile ./Most_Informative_QC/5MI_CRELES_1KGP_only_MI_variants \
+--pca \
+--out CRELESpc7_1KGP_pca
+
+## 111579 variants and 2990 people pass filters and QC.
+
+```
+
+
+### Ancestry investigation
+
+```{r}
+
+### Loading eigenvector for the PCA to plot: -------------------------------------------------
+eigenvec <- read.table("/home/BCRICWH.LAN/Paola.Arguello/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/Global_Ancestry_Analysis/PCA/CRELESpc7_1KGP_pca.eigenvec")
+colnames(eigenvec) <- c(c("FID", "IID"), paste0("PC", seq(1,20)))
+
+
+## Function for plot with all 1KGP superpopulations (e.g., African, European) ----------------
+PCA.kgp_superpopulations <- function(eigenvec){
+  
+  ## Loading sample_info for both CRELES and 1KGP
+  KGP.pop <- read.table("/home/BCRICWH.LAN/Paola.Arguello/KoborLab/kobor_space/ppascualli/Files/CRELES/genotyping_references/1KGP/1KGP_samp-info.txt", header=FALSE) 
+  CRELES.pop <- read.table("/home/BCRICWH.LAN/Paola.Arguello/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/CRELES_pop_meta.txt", header=TRUE, sep = "\t")
+  
+  ## Changing names of the CRELES pop, for easier reading
+  CRELES.pop$Pop <- sub("CRELES - Non Nicoyan", "CRELES-No Nicoyan",CRELES.pop$Pop)
+  CRELES.pop$Pop <- sub("CRELES - Nicoyan", "CRELES-Nicoyan",CRELES.pop$Pop)
+  
+  ## Subsetting to only ID and Pop to merge all pop info:
+  KGP.pop <- KGP.pop[,c(1,3)]
+  colnames(KGP.pop) <- c("IID", "Pop")
+  CRELES.pop <- CRELES.pop[,c(2:3)]
+  colnames(CRELES.pop) <- c("IID", "Pop")
+  Populations <- rbind(CRELES.pop, KGP.pop)
+  
+  ## We change the acronym for all the super populations, to simplify the plot reading:
+  Populations$Pop <- sub("EAS", "East Asian (EAS)",
+                         sub("SAS", "South Asian (SAS)", 
+                             sub("AMR", "Admixed American (AMR)", 
+                                 sub("AFR","African (AFR)",
+                                     sub("EUR","European (EUR)", Populations$Pop)))))
+  eigenvec.pop <- merge(eigenvec,Populations, by="IID")
+  
+  
+  library(ggplot2)
+  library(ggpubr)
+  a <- ggplot(eigenvec.pop, aes(PC1,PC2,color=Pop)) + geom_point(size=3, alpha=0.5) + ylim(c(-0.022,0.04)) + theme(legend.position="left", 
+                                                                                                                   legend.text=element_text(size=15), 
+                                                                                                                   axis.text.x = element_text(size=15),
+                                                                                                                   axis.text.y = element_text(size=15),
+                                                                                                                   axis.title.x = element_text(size=15),
+                                                                                                                   axis.title.y = element_text(size=15))  # + ggtitle("1KGP and CRELES")
+  b <- ggplot(eigenvec.pop, aes(PC3,PC4,color=Pop)) + geom_point(size=3, alpha=0.5) + ylim(c(-0.022,0.06)) + theme(legend.position="left", 
+                                                                                                                   legend.text=element_text(size=15), 
+                                                                                                                   axis.text.x = element_text(size=15),
+                                                                                                                   axis.text.y = element_text(size=15),
+                                                                                                                   axis.title.x = element_text(size=15),
+                                                                                                                   axis.title.y = element_text(size=15)) 
+  
+  return(a)
+  
+  #library(ggpubr)
+  ## PCA with all 1KGP super-populations and CRELES
+  #ggarrange(a,b, ncol = 2, nrow = 1)
+  
+}
+
+## Function for plot with only AMR while keeping superpopulation axis ------------------------
+PCA.AMR_gradient <- function(eigenvec){
+  
+  ## Loading sample_info for both CRELES and 1KGP
+  KGP.pop <- read.table("/home/BCRICWH.LAN/Paola.Arguello/KoborLab/kobor_space/ppascualli/Files/CRELES/genotyping_references/1KGP/1KGP_samp-info.txt", header=FALSE) 
+  CRELES.pop <- read.table("/home/BCRICWH.LAN/Paola.Arguello/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/CRELES_pop_meta.txt", header=TRUE, sep = "\t")
+  
+  ## Changing names of the CRELES pop, for easier reading
+  CRELES.pop$Pop <- sub("CRELES - Non Nicoyan", "CRELES-No Nicoyan",CRELES.pop$Pop)
+  CRELES.pop$Pop <- sub("CRELES - Nicoyan", "CRELES-Nicoyan",CRELES.pop$Pop)
+  
+  ## Selecting only AMR from 1KGP and replcading acronyms:
+  AMR.pop <- KGP.pop[which(KGP.pop$V3 =="AMR"),c(1,4)]
+  colnames(AMR.pop) <-c("IID", "Pop")
+  AMR.pop$Pop <- sub("PEL", "Peruvians",sub("CLM", "Colombians",
+                                           sub("PUR","Puerto Ricans",
+                                               sub(pattern = "MXL", "Mexican-LA", AMR.pop$Pop))))
+  
+  ## Subsetting CRELES to keep only ID and Population:
+  CRELES.pop <- CRELES.pop[,2:3]
+  colnames(CRELES.pop) <-c("IID", "Pop")
+  
+  ## Merging population informacion and eigenvector:
+  Populations <- rbind(CRELES.pop, AMR.pop)
+  eigenvec.pop <- merge(eigenvec,Populations, by="IID")
+
+  
+  library(ggplot2)
+  library(ggpubr)
+  a <- ggplot(eigenvec.pop, aes(PC1,PC2,color=Pop)) + geom_point(size=3, alpha=0.5) + scale_color_brewer(palette="YlGnBu") + ylim(c(-0.022,0.06)) + theme(legend.position="left", 
+                                                                                                                                                          legend.text=element_text(size=15), 
+                                                                                                                                                          axis.text.x = element_text(size=15),
+                                                                                                                                                          axis.text.y = element_text(size=15),
+                                                                                                                                                          axis.title.x = element_text(size=15),
+                                                                                                                                                          axis.title.y = element_text(size=15))
+  
+  b <- ggplot(eigenvec.pop, aes(PC3,PC4,color=Pop)) + geom_point(size=3, alpha=0.5) + scale_color_brewer(palette="YlGnBu") + ylim(c(-0.022,0.06)) + theme(legend.position="left", 
+                                                                                                                                                          legend.text=element_text(size=15), 
+                                                                                                                                                          axis.text.x = element_text(size=15),
+                                                                                                                                                          axis.text.y = element_text(size=15),
+                                                                                                                                                          axis.title.x = element_text(size=15),
+                                                                                                                                                          axis.title.y = element_text(size=15))
+  return(a)
+
+  library(ggpubr)
+  ## PCA keeping the axis determined when using all the ancestries but investigating the clustering of CRELES with respect to AMR populations
+  #ggarrange(c,d, ncol = 2, nrow = 1)
+}
+
+
+KGP <- PCA.kgp_superpopulations(eigenvec)
+AMR <- PCA.AMR_gradient(eigenvec)
+
+KGP
+AMR
+
+```
+
+
+
+
+
+
+
+# Imputation
+
+1. Make sure notation of CRELES and reference (1KGP) is the same
+  a. Download reference files
+  b. Create a frequency file for CRELES so we can compare to reference
+  c. Check for allele notation, strand and position mismatches using the McArthy tools script: https://www.well.ox.ac.uk/~wrayner/tools/
+  
+2. On Michigan Imputation Server: 
+  a. Align to reference panel (1KGP)
+  b. Haplotype phasing
+  c. Impute with (mini)MACH4
+  
+## 1. Pre-imputation checks (AMR)
+
+I decided to choose 1KGP as a reference due to the ability to select the Admixed American population as a reference which has showed best results for imputation quality. More information on the project can be found here: *https://www.internationalgenome.org/*
+  
+```{bash, eval=FALSE}
+
+cd  ~/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/Imputation/1KGP-reference/
+
+## Download 1KGP reference to check for mismatches between the two datasets
+wget https://www.well.ox.ac.uk/~wrayner/tools/1000GP_Phase3_combined.legend.gz
+
+## Create a freq file for the CRELES_pc7 file 
+~/KoborLab/kobor_space/ppascualli/Programs/plink \
+--freq \
+--bfile ../CRELES_pc7 \
+--out CRELES_pc7_freq
+## 43,4336 variants
+
+## Script to check plink .bim files against HRC/1000G for strand, id names, positions, alleles, ref/alt assignment: W.Rayner
+# perl HRC-1000G-check-bim.pl -b <bim file> -f <Frequency file> -r <Reference panel> -g -p <population> [-v -t <allele frequency threshold -n
+cd 1KGP-reference/
+perl ../HRC-1000G-check-bim-v4.pl \
+-b ../../CRELES_pc7.bim \
+-f ../CRELES_pc7_freq.frq \
+-r 1000GP_Phase3_combined.legend -g -p AMR
+
+## This gives a summary of all the differences between CRELES and 1KGP and creates a bash script with a lot of plink instructions to clean it up, change it and convert to vcf format:
+sh Run-plink.sh
+
+## We change everything to another directory to zip it and upload to the MIS
+## Rearranging the output document files
+mkdir CRELES_1KGP-checked/
+mv CRELES_pc7-updated-* CRELES_1KGP-checked/
+mkdir PLINK/ VCF/
+mv *.vcf VCF
+mv *.bed *.bim *.fam *.log PLINK/
+rm -r PLINK/
+
+## Using bgzip to compress all files 
+## loop through all the chromosomes:
+for i in {1..23}
+do
+  bgzip CRELES_pc7-updated-chr$i.vcf 
+  echo $i
+done
+
+
+```
+
+A more detailed summary on the checks before imputation can be found *~/KoborLab/kobor_space/ppascualli/Files/CRELES/CRELES_GSA/Original/PLINK_290520_0823/CRELES_QC/Imputation/1KGP-reference/LOG-CRELES_pc7-1000G.txt* , a total of 3605 genetic variants were removed:
+
+- Total genetic variants removed for allele Frequency diff > 0.2: 1590
+- Palindromic SNPs with Freq > 0.4: 407
+- No Match to 1000G: 194
+- Skipped (XY, Y, MT): 853
+- Non Matching alleles 447
+- Indels: 114
+
+** 430,731 variants before imputation **
+
+## 2. Imputation on Michigan Imputation Server (AMR)
+
+- Name of the job: CRELES 
+
+- Reference Panel: 1000G Phase 3 v5 (GRCh37/hg19)
+
+- Input Files: CRELES_pc7_updated-chrN.vcf.gz (*Gotten from: ~/KoborLab/kobor_space/ppascualli/Files/CRELES/Local_Ancestry/3_GNOmix_genotyping/rephased_gnomix_vcfs*)
+
+- Array Build: GRCh37/hg19
+
+- rsq Filter: off
+
+- Phasing: Eagle v2.4 (phased output)
+
+- Population: AMR
+
+- Mode: Quality Control & Imputation
+
+
+Downloading the results from the Michigan Imputation Server (MIS). 
+```{bash, eval=FALSE}
+
+## Change to imputation working directory to access the MIS files
+cd ~/KoborLab/kobor_space/ppascualli/Files/CRELES/Imputatation/
+
+## Running Script to download all MIS imputation files 
+bash ./scripts/download_results.sh/
+
+## Running Script unzip_files.sh to decompress all the MIS imputation files 
+for i in {2..22}
+do 
+
+    7z  x  -p2W9+wsKmAHyqOP chr_$i.zip
+
+done
+
+```
+
+
+
+# Post-imputation QC 
+## 1. Convert to *best guess* with highly stringent filters
+
+### a. Choosing an Rsq threshold
+
+We need to check for all the poorly imputed SNPs (R2 < 0.3 or INFO < 0.95). This threshold is suggested by MatCH (https://genome.sph.umich.edu/wiki/MaCH_FAQ), the program used to perform the imputation by the MIS, as well as in the VU biobank paper. However, Rsq < 0.2 as a cutoff (higher Rsq = better imputation quality) could also be a valid decision based on the literature: (https://academic.oup.com/bib/article/16/4/549/351496) that establishes that for RSQ a threshold anywhere in between 0.2 and 0.6 is acceptable. I will stick with the more stringent threshold (Rsq < 0.3) to ensure we have the best quality. 
+
+```{r, eval=TRUE}
+
+##### Cumulative frequency plot to choose the best Rsq value: ---------------------------
+library(dplyr)
+info.files.AMR <- list.files("~/KoborLab/kobor_space/ppascualli/Files/CRELES/Imputatation/chrs_info", full.names = TRUE)
+
+chr.Rsq <- function(chr, info.files){
+  
+  ## Choosing to analyze chr9
+  chr_info_tmp <- read.table(file = info.files[chr], header = TRUE)
+  chr_info_tmp$Rsq <- as.numeric(as.character(chr_info_tmp$Rsq))
+  
+  
+  Rsq.df <- c(chr_info_tmp %>% filter(Rsq > 0) %>% pull(Rsq) %>% length(),
+              chr_info_tmp %>% filter(Rsq > 0.1) %>% pull(Rsq) %>% length(),
+              chr_info_tmp %>% filter(Rsq > 0.2) %>% pull(Rsq) %>% length(),
+              chr_info_tmp %>% filter(Rsq > 0.3) %>% pull(Rsq) %>% length(),
+              chr_info_tmp %>% filter(Rsq > 0.4) %>% pull(Rsq) %>% length(),
+              chr_info_tmp %>% filter(Rsq > 0.5) %>% pull(Rsq) %>% length(),
+              chr_info_tmp %>% filter(Rsq > 0.6) %>% pull(Rsq) %>% length(),
+              chr_info_tmp %>% filter(Rsq > 0.7) %>% pull(Rsq) %>% length(),
+              chr_info_tmp %>% filter(Rsq > 0.8) %>% pull(Rsq) %>% length(),
+              chr_info_tmp %>% filter(Rsq > 0.9) %>% pull(Rsq) %>% length(),
+              chr_info_tmp %>% filter(Rsq > 1) %>% pull(Rsq) %>% length())
+  
+  
+  
+  
+  
+  thresholds.df <- data.frame(percentage=(Rsq.df/length(chr_info_tmp$Rsq))*100, thresholds=seq(0,1,0.1))
+  
+  return(thresholds.df)
+}
+
+AMR <- chr.Rsq(chr=9, info.files=info.files.AMR)
+
+
+library(ggplot2)
+ggplot(AMR, aes(x = thresholds, y = percentage, group = 1)) + 
+  geom_point() + geom_line() +
+  ylab("% of snps") + xlab("Rsq \n (higher = better imputation quality)") +
+  geom_vline(xintercept = 0.2, color = "firebrick3") +
+  geom_vline(xintercept = 0.6, color = "deepskyblue3")
+
+## past right (blue line): excluding too many SNPs (false negatives)
+## before left (red line): accepting the junkiest stuff (false positives)
+
+
+```
+
+
+### b . Get all poorly imputed SNPs
+
+```{r, eval=FALSE}
+
+## Need to run this before moving on to the next steps of Post Imputation QC
+library(dplyr)
+info.files <- list.files("~/KoborLab/kobor_space/ppascualli/Files/CRELES/Imputatation/chrs_info", full.names = TRUE)
+
+#### Getting bad SNPs per chromosome ---------------------------------
+## Function to load the chr file and calculate the percentage of bad snps
+get.badSNPs.per.chr <- function(index){
+  print(index)
+  chr_info_tmp <- read.table(file = info.files[index], header = TRUE)
+  chr_info_tmp$Rsq <- as.numeric(as.character(chr_info_tmp$Rsq))
+  
+  ## We remove poorly imputed snps -----------------
+  ## larger values = higher imputation quality: https://academic.oup.com/bib/article/16/4/549/351496
+  bad.snps <- chr_info_tmp %>% filter(Rsq < 0.3) 
+  
+  ## To get the ids to filter them out -------------
+  write.table(bad.snps$SNP, 
+              file=paste0("~/KoborLab/kobor_space/ppascualli/Files/CRELES/Imputatation/bad_snps/",
+                          "chr", index, "_bad_quality_SNPs.txt"), append = FALSE, quote = FALSE, col.names = FALSE, row.names = FALSE)
+  
+  ## To get the percentages
+  bad <- dim(bad.snps)[1]
+  total <- dim(chr_info_tmp)[1] ## all snps
+  return((bad * 100)/ total)
+}
+
+## get all percentages 
+bad_percentages <- unlist(lapply(1:length(info.files), get.badSNPs.per.chr))
+
+## Getting the right order of chromosome names
+chrs <- list.files("~/KoborLab/kobor_space/ppascualli/Files/CRELES/Imputatation/chrs_info", full.names = FALSE)
+bad.SNPs <- data.frame(Chr=unlist(strsplit(chrs, ".info")), bad_percentages)
+write.table(bad.SNPs, file="~/KoborLab/kobor_space/ppascualli/Files/CRELES/Imputatation/bad_snps/bad_SNPs_per_chrs.txt", 
+            append = FALSE, quote = FALSE, col.names = TRUE, row.names = FALSE)
+
+
+
+
+
+```
+
+Getting the number of SNPs before and after imputation to compare to the percentage of bad SNPs:
+
+```{bash, eval=FALSE}
+
+## To get how many imputed/genotyped SNPs are per chromosome
+for i in {1..22}
+do
+
+echo chr $i  
+cut -f8 chr$i.info  | sort | uniq -c
+echo "---------------"
+
+done >> Chr_summary_GI.txt
+
+### To get the number of Imputed SNPs
+for i in {1..22}
+do
+
+wc -l chr$i.info 
+
+done >> No.SNPs_per-chr.txt
+
+```
+
+```{r}
+
+## Post-imputation:
+No.SNPs <- read.table(file="/home/BCRICWH.LAN/Paola.Arguello/KoborLab/kobor_space/ppascualli/Files/CRELES/Imputatation/chrs_info/No.SNPs_per-chr.txt")
+No.SNPs$V2 <- as.character(unlist(strsplit(as.character(No.SNPs$V2), ".info")))
+colnames(No.SNPs) <- c("No.Snps", "Chr")   
+#sum(No.SNPs$No.Snps) ## 47109800
+
+## Good Snps: 
+bad.SNPs <- read.table(file="/home/BCRICWH.LAN/Paola.Arguello/KoborLab/kobor_space/ppascualli/Files/CRELES/Imputatation/bad_snps/bad_SNPs_per_chrs.txt", header = TRUE)
+bad.SNPs$Chr <- as.character(bad.SNPs$Chr)
+imputed.df <- merge(No.SNPs, bad.SNPs, by="Chr")
+#sum((imputed.df$No.Snps * (100-imputed.df$bad_percentages))/100) ## 21637304
+
+## Genotyped snps:
+geno_snps <- read.table(file="/home/BCRICWH.LAN/Paola.Arguello/KoborLab/kobor_space/ppascualli/Files/CRELES/Imputatation/chrs_info/Genotyped_snps.txt", header = FALSE)
+colnames(geno_snps) <- c("No.Snps", "Genotyped") 
+#sum(geno_snps$No.Snps) ## 417100
+
+### Merging all information in a data frame
+imputation.df <- data.frame(SNPs=c(417100, 47109800, 21637304), 
+                            Process=c("Pre-imputation", "Post-imputation (ALL)", "Post-imputation (good)"))
+### 21 Million good SNPs after imputation 
+
+imputation.df$Process <- factor(imputation.df$Process, levels = imputation.df$Process)
+library(ggplot2)
+ggplot(imputation.df, aes(x=Process, y=SNPs)) +
+  geom_bar(stat="identity") + 
+  geom_text(aes(label=SNPs), vjust=1.6, color="black",
+            position = position_dodge(0.9), size=3.5)
+
+
+```
+
+
+Merging all the bad snps into one file to remove them from the imputed files:
+
+```{bash, eval=FALSE}
+
+###### 2. Now merge all the bad_snp files with cat 
+
+cat chr1_bad_quality_SNPs.txt  <(echo)  \
+chr2_bad_quality_SNPs.txt  <(echo)  \
+chr3_bad_quality_SNPs.txt  <(echo)  \
+chr4_bad_quality_SNPs.txt  <(echo)  \
+chr5_bad_quality_SNPs.txt  <(echo)  \
+chr6_bad_quality_SNPs.txt  <(echo)  \
+chr7_bad_quality_SNPs.txt  <(echo)  \
+chr8_bad_quality_SNPs.txt  <(echo)  \
+chr9_bad_quality_SNPs.txt  <(echo)  \
+chr10_bad_quality_SNPs.txt  <(echo)  \
+chr11_bad_quality_SNPs.txt  <(echo) \
+chr12_bad_quality_SNPs.txt <(echo) \
+chr13_bad_quality_SNPs.txt  <(echo)  \
+chr14_bad_quality_SNPs.txt  <(echo)  \
+chr15_bad_quality_SNPs.txt  <(echo)  \
+chr16_bad_quality_SNPs.txt  <(echo)  \
+chr17_bad_quality_SNPs.txt  <(echo)  \
+chr18_bad_quality_SNPs.txt  <(echo)  \
+chr19_bad_quality_SNPs.txt  <(echo)  \
+chr20_bad_quality_SNPs.txt  <(echo)  \
+chr21_bad_quality_SNPs.txt  <(echo)  \
+chr22_bad_quality_SNPs.txt | sort | uniq >  all_chr_bad_snps_1KGP_imputation.txt
+
+
+
+```
+
+
+Once the number of poorly imputed SNPs have been estimated, we will use it to calculate the percentage of poorly imputed SNPs per chromosome. 
+
+
+```{r}
+
+library(knitr)
+bad.SNPs <- read.table(file="~/KoborLab/kobor_space/ppascualli/Files/CRELES/Imputatation/bad_snps/bad_SNPs_per_chrs.txt", header = TRUE)
+kable(bad.SNPs)
+
+```
+
+
+### c. Transforming dosages to hardcalls using PLINK
+
+For each chromosome we will use plink's hardcalling command to convert the MIS dosage data to hardcalled data (using the default hardcalling parameters 0-0.1=0/0, 0.9-1.1=0/1, 1.9-2=1/1)
+
+```{bash, eval=FALSE}
+
+cd ~/KoborLab/kobor_space/ppascualli/Files/CRELES/Post-Imputation
+
+for index in {1..22}
+do
+~/KoborLab/kobor_space/ppascualli/Programs/plink2 --vcf ~/KoborLab/kobor_space/ppascualli/Files/CRELES/Imputatation/imputed_vcfs/chr$index.dose.vcf --hard-call-threshold 0.1 --make-bed  --out chr$index\_hard-calls
+done
+
+```
+
+### d. Merging back all the chromosome files onto 1
+
+```{bash, eval=FALSE}
+
+#### Merging all the chr files of the hard-calls obtained with plink onto one file
+cd ~/KoborLab/kobor_space/ppascualli/Files/CRELES/Post-Imputation
+
+## Creating the mergelist file 
+for i in {1..22}
+do
+ echo chr$i\_hard-calls.bed chr$i\_hard-calls.bim chr$i\_hard-calls.fam >> mergelist.txt
+done
+
+~/KoborLab/kobor_space/ppascualli/Programs/plink --merge-list mergelist.txt --make-bed --out 0_CRELES_imputed_plink-hardC
+
+
+```
+
+
+### e. Last filters
+
+Filter out: 
+
+  - SNPs with missingness > 0.02 
+
+  - individuals with missingness > 0.02
+
+  - bad quality SNPs from the list created on **a**
+  
+
+```{bash, eval=FALSE}
+
+cd ~/KoborLab/kobor_space/ppascualli/Files/CRELES/Post-Imputation/
+  
+~/KoborLab/kobor_space/ppascualli/Programs/plink \
+--bfile 0_CRELES_imputed_plink-hardC \
+--geno 0.05 --mind 0.02 \
+--exclude ../Imputatation/bad_snps/all_chr_bad_snps_1KGP_imputation.txt \
+--make-bed --out 1_CRELES_imputed_plink_hardC
+
+##** See note below
+
+# 0 people removed due to missing genotype data (--mind).
+# 34 variants removed due to missing genotype data (--geno).
+# 20194270 variants and 466 people pass filters and QC.
+## 20M variants remaining!
+
+
+```
+
+
+
+## 2. Plot MAF to HRC reference subpopulations
+
+To do a more in dept QC, I will use the McCarthy post-imputation script (*https://www.well.ox.ac.uk/~wrayner/tools/Post-Imputation.html*). I believe it is a great set of tools, recommended by the Michigan Imputation Server and used above for the pre-imputation check, 
+
+```{bash, eval=FALSE}
+cd ~/KoborLab/kobor_space/ppascualli/Files/CRELES/Post-Imputation/McArthy_tools
+
+## First we download the resources and make sure we have the required dependencies
+wget https://www.well.ox.ac.uk/~wrayner/tools/ic.v1.0.9.zip
+wget https://www.well.ox.ac.uk/~wrayner/tools/vcfparse.zip
+
+## Now, we need to slightly parse the big vcf files in order to be maneagable by the IC script
+## for this, we use the following command: vcfparse.pl -d <directory of VCFs> -o <outputname> -g <flag to indicate the output files are gzipped>
+
+vcfparse.pl -d ~/KoborLab/kobor_space/ppascualli/Files/CRELES/Imputatation/imputed_vcfs -o 2_CRELES-imputed_MC-parsed -g
+
+## Finally, we run the post-imputing QC 
+perl ./IC/ic.pl \
+-d ./2_CRELES-imputed_MC-parsed/ \
+-r  1000GP_Phase3_combined.legend \
+--pop AMR \
+-h  -o 3_CRELES_post-imputation_check
+
+
+```
+
+
+## 3. Adding CRELES metedata to fam file
+
+```{r, eval=FALSE}
+### Loading fam-file: 
+CRELES.fam <- as.data.frame(read.table("~/KoborLab/kobor_space/ppascualli/Files/CRELES/Post-Imputation/1_CRELES_imputed_plink_hardC.fam",
+                                       header = FALSE))
+
+## Getting ids in the same format as IDSUJETO variable in CRELES metadata 
+CRELES_ids <- unlist(strsplit(as.character(CRELES.fam$V2), split = "_")) 
+CRELES_ids <- CRELES_ids[seq(2,972,2)]
+
+CRELES_ids2 <- unlist(strsplit(as.character(CRELES_ids), split = "-"))
+CRELES_ids2 <- CRELES_ids2[which(CRELES_ids2 != "R2")] ## 486 samples
+
+CRELES.fam$IDSUJETO <- CRELES_ids2
+colnames(CRELES.fam) <- c("familyID", "within_famID","DadfamID","MomfamID", "Sex_code", "Phenotype", "IDSUJETO")
+
+
+### Loading Kobor lab metadata:
+load("~/KoborLab/Projects/CRELES/CRELES_GSA_DNAm_Meta.RData")
+variables <- colnames(CRELES_GSA_DNAm_Meta)
+
+## BMI = IMC2_M = 2328
+## HDL = HDLAJU_M = 2291
+## BPDiastolic = C138B_M = 2128
+## IDSUJETO = 2
+
+CVD_subset <- CRELES_GSA_DNAm_Meta[,c(2,2328,2291,2128)]
+colnames(CVD_subset) <- c("IDSUJETO", "HDL", "Diastolic", "BMI")
+
+
+### Checking to have all the ids needed: 
+not.in.meta <- CRELES.fam$IDSUJETO[!CRELES.fam$IDSUJETO %in% CVD_subset$IDSUJETO]
+
+
+## Now, we try again: --------------------------------------------------
+### Loading fam-file: 
+CRELES.fam <- as.data.frame(read.table("~/KoborLab/kobor_space/ppascualli/Files/CRELES/Post-Imputation/1_CRELES_imputed_plink_hardC.fam",
+                                       header = FALSE))
+
+## Getting ids in the same format as IDSUJETO variable in CRELES metadata 
+CRELES_ids <- unlist(strsplit(as.character(CRELES.fam$V2), split = "_")) 
+CRELES_ids <- CRELES_ids[seq(2,972,2)]
+
+CRELES_ids2 <- unlist(strsplit(as.character(CRELES_ids), split = "-"))
+CRELES_ids2 <- CRELES_ids2[which(CRELES_ids2 != "R2")] ## 486 samples
+
+CRELES.fam$IDSUJETO <- CRELES_ids2
+colnames(CRELES.fam) <- c("familyID", "within_famID","DadfamID","MomfamID", "Sex_code", "Phenotype", "IDSUJETO")
+
+
+### Loading Kobor lab metadata:
+load("~/KoborLab/Projects/CRELES/CRELES_GSA_DNAm_Meta.RData")
+variables <- colnames(CRELES_GSA_DNAm_Meta)
+
+## BMI = IMC2_M = 2328
+## HDL = HDLAJU_M = 2291
+## BPDiastolic = C138B_M = 2128
+## IDSUJETO = 2
+
+CVD_subset <- CRELES_GSA_DNAm_Meta[,c(2,2328,2291,2128)]
+colnames(CVD_subset) <- c("IDSUJETO", "HDL", "Diastolic", "BMI")
+
+
+### Checking to have all the ids needed: 
+not.in.meta <- CRELES.fam$IDSUJETO[!CRELES.fam$IDSUJETO %in% CVD_subset$IDSUJETO]
+
+
+## Merging data sets: 
+CVD_subset$IDSUJETO <- as.character(CVD_subset$IDSUJETO)
+CRELES.newfam <- merge(CRELES.fam, CVD_subset,by="IDSUJETO")
+CRELES.newfam <- CRELES.newfam[,c(2:6, 8:10)]
+CRELES.newfam <- CRELES.newfam[order(match(CRELES.newfam$within_famID,CRELES.fam$within_famID)),]
+
+write.table(CRELES.newfam, 
+            file="~/KoborLab/kobor_space/ppascualli/Files/CRELES/Post-Imputation/1_CRELES_imputed_plink_hardC_someMeta.fam",
+            quote = FALSE, row.names = FALSE, col.names = TRUE)
+
+
+```
+
+
+
+

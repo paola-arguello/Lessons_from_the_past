@@ -1,0 +1,623 @@
+---
+title: "CRELES: Global ancestry update"
+date: "September 2021"
+author: "Paola Arguello Pascualli"
+output: 
+  html_document: 
+    keep_md: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# LAI references: 3 pop
+
+  - EUR: IBR + GBR
+  
+  - NAT: PEL and MXL that were shown to be representative for NAT ancestry
+  
+  - AFR: YRI
+
+## Most informative variants QC
+
+```{bash, eval=FALSE}
+
+## Substracting only the correct references:  ----------------------------------------------------------
+cd ~/KoborLab/kobor_space/ppascualli/Files/CRELES/Local_Ancestry/3_XGMix_genotyping_training/4_Subsetting/
+cp merged_1KGP-CR357K_CRELES.vcf.gz ~/KoborLab/kobor_space/ppascualli/Files/CRELES/Global_Ancestry/ADMIXTURE/
+cat CRELES_IDs.txt referenceIDs.txt > ~/KoborLab/kobor_space/ppascualli/Files/CRELES/Global_Ancestry/ADMIXTURE/CRELES_references_IDs.txt
+##801 samples
+
+cd ~/KoborLab/kobor_space/ppascualli/Files/CRELES/Global_Ancestry/ADMIXTURE/
+bcftools view merged_1KGP-CR357K_CRELES.vcf.gz -S CRELES_references_IDs.txt -Oz -o merged_801kgp-CR357K.vcf
+
+
+## Convert to bed format: ----------------------------------------------------------
+~/KoborLab/kobor_space/ppascualli/Programs/plink \
+--vcf  merged_801kgp-CR357K.vcf \
+--make-bed \
+--out merged_801kgp-CR357K
+### 417422 variants and 801 people pass filters and QC.
+
+
+### Remove sex chromosomes: ---------------------------------------------------------
+# For simplicity and since the XY and MT chromosomes won't interfere with the infered ancestry on the PCA, they are removed from CRELES, using plink 1.9 command (--not-chr X,Y,XY,25,MT), to avoid any potential issues associated to haploidies and different annotations. 
+
+~/KoborLab/kobor_space/ppascualli/Programs/plink --bfile ../merged_801kgp-CR357K --not-chr X,Y,XY,25,MT, --make-bed --out 1M_CRELES
+##417422 variants and 801 people pass filters and QC.
+
+
+
+### MAF > 5%: ------------------------------------------------------------------------
+# We want the most informative variants to show the stratification between populations, therefore we strigthen the MAF threshold using the plink 1.9 command (--maf 0.05). 
+
+~/KoborLab/kobor_space/ppascualli/Programs/plink --bfile 1M_CRELES --maf 0.05 --make-bed --out 2M_CRELES
+##286160 variants and 801 people pass filters and Q
+
+
+
+### Filter for non-ambigous SNPs: ------------------------------------------------------
+# "A T/G SNPs is non-ambiguous as its complement on the other strand is A/C. However, G/C and T/A variants are ambiguous or cryptic as their complementary alleles are C/G and A/T, respectively. This ambiguity means it is more difficult to detect and resolve strand issues for these SNPs" (https://www.ncbi.nlm.nih.gov/pmc/articles/PMC4307387/), therefore we remove them to avoid potential issues.
+
+grep --perl-regexp "A\tT" 2M_CRELES.bim > 3M_ATsnps.txt
+grep --perl-regexp "G\tC" 2M_CRELES.bim > 3M_GCsnps.txt
+cat 3M_ATsnps.txt 3M_GCsnps.txt > 3M_ambiguous_snps.txt
+
+~/KoborLab/kobor_space/ppascualli/Programs/plink \
+--bfile 2M_CRELES \
+--exclude 3M_ambiguous_snps.txt \
+--make-bed \
+--out 3M_CRELES
+##285897 variants and 801 people pass filters and QC.
+
+
+
+### Filter high-LD regions: -------------------------------------------------------------
+# Because high LD regions might give redundancy to the PCA, we removed high LD regions to allow for the most informative regions to be set apart and used. The regions were taken from: https://genome.sph.umich.edu/wiki/Regions_of_high_linkage_disequilibrium_(LD) and the knownly Major Histocompatibility Complex (MHC) was added to the list with its genomic coordinates (chr6, 25-35Mb).
+
+~/KoborLab/kobor_space/ppascualli/Programs/plink2 \
+--bfile 3M_CRELES \
+--exclude range ~/KoborLab/kobor_space/ppascualli/Files/CRELES/genotyping_references/high-LD-regions-hg19-GRCh37.txt \
+--make-bed \
+--out 4M_CRELES
+##276456 variants remaining after main filters
+
+
+
+### LD prunning: ------------------------------------------------------------------------------------------
+# Same as before, to reduce redundancy as much as possible we perform two rounds of LD prunning with plink 1.9 (--indep-pairwise 200 100 0.2).
+
+## ------ First pruning round: 
+~/KoborLab/kobor_space/ppascualli/Programs/plink2 \
+--bfile 4M_CRELES \
+--indep-pairwise 200 100 0.2 \
+--out 5M_CRELES_p1
+
+## Now we create the bfiles containing only the prunned variants (1)
+~/KoborLab/kobor_space/ppascualli/Programs/plink2 \
+--bfile 4M_CRELES \
+--extract 5M_CRELES_p1.prune.in \
+--make-bed \
+--out 5M_CRELES_p1.pruned
+##105577 variants remaining after main filters
+
+## ------ Second pruning round
+~/KoborLab/kobor_space/ppascualli/Programs/plink2 \
+--bfile  5M_CRELES_p1.pruned \
+--indep-pairwise 200 100 0.2 \
+--out 5M_CRELES_p2
+
+## Now we create the bfiles containing only the prunned variants (2)
+~/KoborLab/kobor_space/ppascualli/Programs/plink2 \
+--bfile 5M_CRELES_p1.pruned \
+--extract 5M_CRELES_p2.prune.in \
+--make-bed \
+--out merged_801kgp-CR357K_mostInf
+##105379 variants remaining after main filters.
+
+
+```
+
+
+## Running ADMIXTURE
+
+```{bash, eval=FALSE}
+
+## Cross validation of CRELES: -------------------------------------------------------
+for i in {1..5}
+  do 
+  ## Running ADMIXTURE for 3 ancestral populations, to get the heterogeneity in PEL
+  ## Plink file with data
+  ## N: Number of ancestral populations
+  ## -jN: Number of threads that ADMIXTURE will run on
+  ## --cv=N: Cross validation error enabling, the number indicates the n-fold
+
+~/KoborLab/kobor_space/ppascualli/Programs/admixture_linux-1.3.0/admixture --cv  merged_801kgp-CR357K_mostInf.bed $i -j5 | tee log${i}.out
+
+done
+
+## Now, we get the cross-validation error per each ancestry analysis to create a plot:
+grep -h CV log*.out
+
+##CV error (K=1): 0.56659
+##CV error (K=2): 0.54053
+##CV error (K=3): 0.53074
+##CV error (K=4): 0.53051
+##CV error (K=5): 0.53098
+
+
+
+```
+
+## Cross validation error
+```{r}
+
+#### ------------------ Cross validation error ---------------------- ####
+CV.error <- data.frame(cross_val_error=round(c(0.56659, 0.54053, 0.53074, 0.53051, 0.53098),4), 
+                       K=c(1:5))
+
+library(ggplot2)
+ggplot(CV.error, aes(x=K, y=cross_val_error)) + 
+  geom_point() + geom_line() +
+  xlab("K-mers (No. populations)") + ylab("5-fold cross-validation error")
+
+```
+
+## Unsupervised ADMIXTURE
+
+```{r}
+#### ----------------- Unsupervised ADMIXTURE ---------------------- ####
+Q <- read.table("/Users/paola.arguello/Documents/UBC/LANGEBIO/ADMIXTURE_files/merged_801kgp-CR357K_mostInf.3.Q")
+IDs <- read.table("/Users/paola.arguello/Documents/UBC/LANGEBIO/ADMIXTURE_files/merged_801kgp-CR357K_IDs.txt")
+sample.info <- read.table("/Users/paola.arguello/Documents/UBC/LANGEBIO/ADMIXTURE_files/1kgp_CRELES_sample-info.txt")
+Q$V4 <- IDs$V1
+CRELES.adx <- merge(Q, sample.info, by.x = "V4", by.y = "V1")
+
+## References + CRELES general plot---------------------
+## V1 - EUR
+## V2 - AFR
+## V3 - NAT
+
+colnames(CRELES.adx) <- c("ID", "EUR","AFR", "NAT", "SuperPop", "Population")
+
+
+## ggplot ---------------------
+library(tidyverse)
+NAT <- CRELES.adx %>% filter(SuperPop == "AMR") %>% arrange(EUR) 
+EUR <- CRELES.adx %>% filter(SuperPop == "EUR") %>% arrange(EUR) 
+AFR <- CRELES.adx %>% filter(SuperPop == "AFR") %>% arrange(EUR) 
+CR <- CRELES.adx %>% filter(Population == "Non-Nicoyan") %>% arrange(EUR) 
+Nico <- CRELES.adx %>% filter(Population == "Nicoyan") %>% arrange(EUR) 
+
+CRELES.adx.new <- rbind(CR, Nico, AFR, EUR, NAT)
+CRELES.adx.new$newID <- as.character(1:length(CRELES.adx.new$ID))
+CRELES.adx.new <- CRELES.adx.new[, c(2:4,7)]
+
+library(ggplot2)
+library(reshape2)
+CRELES.adx.melt <- melt(CRELES.adx.new)
+
+ggplot(data=CRELES.adx.melt, aes(x=as.numeric(newID), y=value, fill=variable)) +
+  geom_bar(stat="identity", width = 1) +
+  scale_fill_manual("Ancestry", values = c("AFR" = "red", 
+                                           "EUR" = "deepskyblue3", 
+                                           "NAT" = "greenyellow")) +
+  theme(axis.text.x=element_text(color = "black", size=3, angle=90),
+        panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank()) +
+  ylab("Ancestry %") + xlab("") 
+
+
+
+```
+
+
+## Ancestry proportion differences
+
+```{r}
+#### -------------- Ancestry proportion differences ------------------------ #### 
+library(ggplot2)
+library(reshape2)
+
+## reshaping the data: 
+Q.new2 <- rbind(CR, Nico)
+Q.melt2 <- melt(Q.new2)
+
+## bar plot ---------------
+ggplot(Q.melt2, aes(x=variable, y=value, color=Population)) +
+  xlab("Ancestral population") +
+  ylab("Genetic ancestry %") + 
+  ylim(c(0,1.019)) +
+  geom_boxplot(
+    
+    # custom boxes
+    alpha=0.2,
+    
+    # Notch?
+    notch=TRUE,
+    notchwidth = 0.8,
+    
+    # custom outliers
+    outlier.colour="red",
+    outlier.fill="red",
+    outlier.size=2
+    
+  )
+
+
+## violin plot -------------
+ggplot(Q.melt2, aes(x=variable, y=value, color=Population)) + geom_violin(position=position_dodge(1))+
+  xlab("Ancestral population") + ylab("Genetic ancestry %")
+
+
+## Native American ancestry:
+t.test(CR$NAT, Nico$NAT)
+##p-value = 2.189e-08
+
+## European ancestry:
+t.test(CR$EUR, Nico$EUR)
+##p-value < 2.2e-16
+
+## African ancestry:
+t.test(CR$AFR, Nico$AFR)
+##p-value < 2.2e-16
+
+```
+
+
+## European ancestry percentage
+
+```{r}
+
+#### ------------------ European ancestry % plot ----------------------- ####
+
+CRELES.Q <- rbind(CR, Nico) %>% arrange(EUR) 
+CRELES.Q$newID <- as.character(1:length(CRELES.Q$ID))
+CRELES.Q <- CRELES.Q[, c(2:4,7)]
+
+library(ggplot2)
+library(reshape2)
+CRELES.Q.melt <- melt(CRELES.Q)
+
+ggplot(data=CRELES.Q.melt, aes(x=as.numeric(newID), y=value, fill=variable)) +
+  geom_bar(stat="identity", width = 1) +
+  scale_fill_manual("Ancestry", values = c("AFR" = "red", 
+                                           "EUR" = "deepskyblue3", 
+                                           "NAT" = "greenyellow")) +
+  theme(axis.text.x=element_text(color = "black", size=3, angle=90),
+        panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank()) +
+  ylab("Ancestry %") + xlab("") 
+
+
+### Quantiles: -----
+#CRELES.Q <- rbind(CR, Nico) %>% arrange(EUR) 
+#CRELES.Q %>% filter(EUR <= 0.25) %>% pull(Population) %>% table()               ## N: 57%, N-N: 42%
+#CRELES.Q %>% filter(EUR >= 0.25, EUR <= 0.5) %>% pull(Population) %>% table()   ## N: 44%, N-N: 56%
+#CRELES.Q %>% filter(EUR >= 0.5, EUR <= 0.75 ) %>% pull(Population) %>% table()  ## N: 4%,  N-N: 96%
+#CRELES.Q %>% filter(EUR >= 0.75) %>% pull(Population) %>% table()               ## N: 5% ,  N-N: 95%
+
+## Calculating percentages:
+#a <- 1
+#b <- 21
+#(a*100)/(a+b)
+#(b*100)/(a+b)
+
+library(knitr)
+library(kableExtra)
+kable(data.frame(Nicoyan=c("57 %", "44 %", "4 %", "5 %"),
+          Non.Nicoyan=c("42 %","56 %","96 %","95 %"))) %>%
+  kable_paper("striped")
+
+
+```
+
+
+
+
+
+
+
+
+# LAI references: 4 pop
+
+  - EUR: IBR + GBR
+  
+  - NAT: PEL and MXL that were shown to be representative for NAT ancestry
+  
+  - AFR: YRI
+  
+  - EAS: CHB
+
+## Most informative variants QC
+
+```{bash, eval=FALSE}
+
+## Substracting only the correct references:  ----------------------------------------------------------
+cd ~/KoborLab/kobor_space/ppascualli/Files/CRELES/Local_Ancestry/3_XGMix_genotyping_training/4_Subsetting/
+cp merged_1KGP-CR357K_CRELES.vcf.gz ~/KoborLab/kobor_space/ppascualli/Files/CRELES/Global_Ancestry/ADMIXTURE_LAIref_4pop
+
+cd ~/KoborLab/kobor_space/ppascualli/Files/CRELES/Global_Ancestry/ADMIXTURE_LAIref_4pop
+bcftools view merged_1KGP-CR357K_CRELES.vcf.gz -S references4pop_CRELES.txt -o merged_4pop-CR357K.vcf
+
+
+## Convert to bed format: ----------------------------------------------------------
+~/KoborLab/kobor_space/ppascualli/Programs/plink \
+--vcf  merged_4pop-CR357K.vcf \
+--make-bed \
+--out merged_4pop-CR357K
+### 417422 variants and 904 people pass filters and QC.
+
+
+### Remove sex chromosomes: ---------------------------------------------------------
+# For simplicity and since the XY and MT chromosomes won't interfere with the infered ancestry on the PCA, they are removed from CRELES, using plink 1.9 command (--not-chr X,Y,XY,25,MT), to avoid any potential issues associated to haploidies and different annotations. 
+
+~/KoborLab/kobor_space/ppascualli/Programs/plink --bfile ../merged_4pop-CR357K --not-chr X,Y,XY,25,MT, --make-bed --out 1M_CRELES
+## 417422 variants and 904 people pass filters and QC.
+
+
+
+### MAF > 5%: ------------------------------------------------------------------------
+# We want the most informative variants to show the stratification between populations, therefore we strigthen the MAF threshold using the plink 1.9 command (--maf 0.05). 
+
+~/KoborLab/kobor_space/ppascualli/Programs/plink --bfile 1M_CRELES --maf 0.05 --make-bed --out 2M_CRELES
+##289262 variants and 904 people pass filters and QC.
+
+
+### Filter for non-ambigous SNPs: ------------------------------------------------------
+# "A T/G SNPs is non-ambiguous as its complement on the other strand is A/C. However, G/C and T/A variants are ambiguous or cryptic as their complementary alleles are C/G and A/T, respectively. This ambiguity means it is more difficult to detect and resolve strand issues for these SNPs" (https://www.ncbi.nlm.nih.gov/pmc/articles/PMC4307387/), therefore we remove them to avoid potential issues.
+
+grep --perl-regexp "A\tT" 2M_CRELES.bim > 3M_ATsnps.txt
+grep --perl-regexp "G\tC" 2M_CRELES.bim > 3M_GCsnps.txt
+cat 3M_ATsnps.txt 3M_GCsnps.txt > 3M_ambiguous_snps.txt
+
+~/KoborLab/kobor_space/ppascualli/Programs/plink \
+--bfile 2M_CRELES \
+--exclude 3M_ambiguous_snps.txt \
+--make-bed \
+--out 3M_CRELES
+##289002 variants and 904 people pass filters and QC.
+
+
+### Filter high-LD regions: -------------------------------------------------------------
+# Because high LD regions might give redundancy to the PCA, we removed high LD regions to allow for the most informative regions to be set apart and used. The regions were taken from: https://genome.sph.umich.edu/wiki/Regions_of_high_linkage_disequilibrium_(LD) and the knownly Major Histocompatibility Complex (MHC) was added to the list with its genomic coordinates (chr6, 25-35Mb).
+
+~/KoborLab/kobor_space/ppascualli/Programs/plink2 \
+--bfile 3M_CRELES \
+--exclude range ~/KoborLab/kobor_space/ppascualli/Files/CRELES/genotyping_references/high-LD-regions-hg19-GRCh37.txt \
+--make-bed \
+--out 4M_CRELES
+##279511 variants remaining after main filters.
+
+
+
+### LD prunning: ------------------------------------------------------------------------------------------
+# Same as before, to reduce redundancy as much as possible we perform two rounds of LD prunning with plink 1.9 (--indep-pairwise 200 100 0.2).
+
+## ------ First pruning round: 
+~/KoborLab/kobor_space/ppascualli/Programs/plink2 \
+--bfile 4M_CRELES \
+--indep-pairwise 200 100 0.2 \
+--out 5M_CRELES_p1
+
+## Now we create the bfiles containing only the prunned variants (1)
+~/KoborLab/kobor_space/ppascualli/Programs/plink2 \
+--bfile 4M_CRELES \
+--extract 5M_CRELES_p1.prune.in \
+--make-bed \
+--out 5M_CRELES_p1.pruned
+##106999 variants remaining after main filters.
+
+## ------ Second pruning round
+~/KoborLab/kobor_space/ppascualli/Programs/plink2 \
+--bfile  5M_CRELES_p1.pruned \
+--indep-pairwise 200 100 0.2 \
+--out 5M_CRELES_p2
+
+## Now we create the bfiles containing only the prunned variants (2)
+~/KoborLab/kobor_space/ppascualli/Programs/plink2 \
+--bfile 5M_CRELES_p1.pruned \
+--extract 5M_CRELES_p2.prune.in \
+--make-bed \
+--out merged_4pop-CR357K_mostInf
+##106785 variants remaining after main filters.
+
+
+```
+
+
+## Running ADMIXTURE
+
+```{bash, eval=FALSE}
+
+## Cross validation of CRELES: -------------------------------------------------------
+for i in {1..5}
+  do 
+  ## Running ADMIXTURE for 3 ancestral populations, to get the heterogeneity in PEL
+  ## Plink file with data
+  ## N: Number of ancestral populations
+  ## -jN: Number of threads that ADMIXTURE will run on
+  ## --cv=N: Cross validation error enabling, the number indicates the n-fold
+
+~/KoborLab/kobor_space/ppascualli/Programs/admixture_linux-1.3.0/admixture --cv  merged_4pop-CR357K_mostInf.bed $i -j5 | tee log${i}.out
+
+done
+
+## Now, we get the cross-validation error per each ancestry analysis to create a plot:
+grep -h CV log*.out
+
+##CV error (K=1): 0.56956
+##CV error (K=2): 0.54555
+##CV error (K=3): 0.53132
+##CV error (K=4): 0.52534
+##CV error (K=5): 0.52523
+
+
+
+```
+
+## Cross validation error
+```{r}
+
+#### ------------------ Cross validation error ---------------------- ####
+CV.error <- data.frame(cross_val_error=round(c(0.56956, 0.54555, 0.53132, 0.52534, 0.52523),4), 
+                       K=c(1:5))
+
+library(ggplot2)
+ggplot(CV.error, aes(x=K, y=cross_val_error)) + 
+  geom_point() + geom_line() +
+  xlab("K-mers (No. populations)") + ylab("5-fold cross-validation error")
+
+```
+
+## Unsupervised ADMIXTURE
+
+```{r}
+#### ----------------- Unsupervised ADMIXTURE ---------------------- ####
+## On kobor space: ~/KoborLab/kobor_space/ppascualli/Files/CRELES/Global_Ancestry/ADMIXTURE_LAIref_4pop
+
+Q <- read.table("/Users/paola.arguello/Documents/UBC/LANGEBIO/ADMIXTURE_files/merged_4pop-CR357K_mostInf.4.Q")
+IDs <- read.table("/Users/paola.arguello/Documents/UBC/LANGEBIO/ADMIXTURE_files/references4pop_CRELES.txt")
+ref.ids <- as.character(IDs[1:438,])
+creles.ids <- IDs[439:904,]
+creles.ids <- unlist(strsplit(as.character(creles.ids), "_"))[seq(2,932,2)]
+IDs <- c(ref.ids, creles.ids)
+sample.info <- read.table("/Users/paola.arguello/Documents/UBC/LANGEBIO/ADMIXTURE_files/1kgp_CRELES_sample-info.txt")
+Q$V5 <- IDs
+
+CRELES.adx <- merge(Q, sample.info, by.x = "V5", by.y = "V1")
+
+## References + CRELES general plot---------------------
+## V1 - NAT
+## V2 - EUR
+## V3 - EAS
+## V4 - AFR
+
+colnames(CRELES.adx) <- c("ID", "NAT","EUR", "EAS", "AFR", "SuperPop", "Population")
+
+
+## ggplot ---------------------
+library(tidyverse)
+NAT <- CRELES.adx %>% filter(SuperPop == "AMR") %>% arrange(EUR) 
+EUR <- CRELES.adx %>% filter(SuperPop == "EUR") %>% arrange(EUR) 
+AFR <- CRELES.adx %>% filter(SuperPop == "AFR") %>% arrange(EUR)
+EAS <- CRELES.adx %>% filter(SuperPop == "EAS") %>% arrange(EUR)
+CR <- CRELES.adx %>% filter(Population == "Non-Nicoyan") %>% arrange(EUR) 
+Nico <- CRELES.adx %>% filter(Population == "Nicoyan") %>% arrange(EUR) 
+
+CRELES.adx.new <- rbind(CR, Nico, AFR, EUR, NAT, EAS)
+CRELES.adx.new$newID <- as.character(1:length(CRELES.adx.new$ID))
+CRELES.adx.new <- CRELES.adx.new[, c(2:5,8)]
+
+library(ggplot2)
+library(reshape2)
+CRELES.adx.melt <- melt(CRELES.adx.new)
+
+ggplot(data=CRELES.adx.melt, aes(x=as.numeric(newID), y=value, fill=variable)) +
+  geom_bar(stat="identity", width = 1) +
+  scale_fill_manual("Ancestry", values = c("AFR" = "red", 
+                                           "EUR" = "deepskyblue3", 
+                                           "NAT" = "greenyellow",
+                                           "EAS" = "yellow")) +
+  theme(axis.text.x=element_text(color = "black", size=3, angle=90),
+        panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank()) +
+  ylab("Ancestry %") + xlab("") 
+
+
+```
+
+
+## Ancestry proportion differences
+
+```{r}
+#### -------------- Ancestry proportion differences ------------------------ #### 
+library(ggplot2)
+library(reshape2)
+
+## reshaping the data: 
+Q.new2 <- rbind(CR, Nico)
+Q.melt2 <- melt(Q.new2)
+
+## bar plot ---------------
+ggplot(Q.melt2, aes(x=variable, y=value, color=Population)) +
+  xlab("Ancestral population") +
+  ylab("Genetic ancestry %") + 
+  ylim(c(0,1.019)) +
+  geom_boxplot(
+    
+    # custom boxes
+    alpha=0.2,
+    
+    # Notch?
+    notch=TRUE,
+    notchwidth = 0.8,
+    
+    # custom outliers
+    outlier.colour="red",
+    outlier.fill="red",
+    outlier.size=2
+    
+  )
+
+
+## violin plot -------------
+ggplot(Q.melt2, aes(x=variable, y=value, color=Population)) + geom_violin(position=position_dodge(1))+
+  xlab("Ancestral population") + ylab("Genetic ancestry %")
+
+
+## Native American ancestry:
+t.test(CR$NAT, Nico$NAT)
+##p-value = p-value = 3.158e-08
+
+## European ancestry:
+t.test(CR$EUR, Nico$EUR)
+##p-value < 2.2e-16
+
+## African ancestry:
+t.test(CR$AFR, Nico$AFR)
+##p-value < 2.2e-16
+
+## East Asian ancestry:
+t.test(CR$EAS, Nico$EAS)
+##p-value = 0.6663
+
+
+
+```
+
+
+## European ancestry percentage
+
+```{r}
+
+#### ------------------ European ancestry % plot ----------------------- ####
+
+CRELES.Q <- rbind(CR, Nico) %>% arrange(EUR) 
+CRELES.Q$newID <- as.character(1:length(CRELES.Q$ID))
+CRELES.Q <- CRELES.Q[, c(2:5,8)]
+
+library(ggplot2)
+library(reshape2)
+CRELES.Q.melt <- melt(CRELES.Q)
+
+ggplot(data=CRELES.Q.melt, aes(x=as.numeric(newID), y=value, fill=variable)) +
+  geom_bar(stat="identity", width = 1) +
+  scale_fill_manual("Ancestry", values = c("AFR" = "red", 
+                                           "EUR" = "deepskyblue3", 
+                                           "NAT" = "greenyellow")) +
+  theme(axis.text.x=element_text(color = "black", size=3, angle=90),
+        panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank()) +
+  ylab("Ancestry %") + xlab("") 
+
+
+
+```
+
+
+
+
+
+

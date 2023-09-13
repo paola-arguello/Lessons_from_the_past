@@ -1,0 +1,535 @@
+Admixture Mapping
+================
+Paola Arguello
+27/04/2022
+
+``` r
+library(GWASTools)
+library(GENESIS)
+library(qqman)
+library(SNPRelate)
+library(biomaRt)
+library(tidyverse)
+library(ggplot2)
+```
+
+# Admixture Mapping
+
+- Admixture mapping basically tests the association of ancestry to
+  phenotype
+- It can be done with linear of logistic regression, depending on the
+  trait to analyze (binary or quantitative)
+- After performing AM, you can do fine-mapping within the region found
+  to be significant. This region must have allele freq differences
+
+# 1. Preparing the meta-data (annotation file):
+
+``` r
+#### 1. Create data.frame with all the metadata: ---------------------
+#End result should look: scanID gNAT gAFR gEUR pheno
+
+## Loading global ancestry data: 
+ancestry <- read.table("~/KoborLab/kobor_space/ppascualli/Files/CRELES/Global_Ancestry/ADMIXTURE_LAIref_3pop/global_local_v2.txt",
+                       header = TRUE)
+
+## Loading Nicoyan status (phenotype):
+pheno <- read.table("~/KoborLab/kobor_space/ppascualli/Files/CRELES/sample_info_files/sample_info_CRELESpc7.txt",
+                    header = FALSE)
+colnames(pheno) <- c("FID", "ID", "Pop", "pheno")
+pheno$pheno <- as.numeric(gsub("Nicoyan", 1, gsub("CostaRican", 0, pheno$pheno)))
+## adding sex from the metadata: 
+load("~/KoborLab/Projects/CRELES/CRELES_GSA_DNAm_Meta.RData")
+geno_meta <- CRELES_GSA_DNAm_Meta[c(455,1867)]
+geno_meta$GSA_ID <- gsub(".", "-",gsub("X", "",geno_meta$GSA_ID), fixed = TRUE)
+pheno <- merge(pheno[,c(2,4)], geno_meta, by.x = "ID", by.y = "GSA_ID")
+colnames(pheno) <- c("ID", "pheno", "sex")
+pheno$sex <- gsub("1","M",gsub("2", "F",pheno$sex))
+
+## Merge information: 
+covars <- merge(ancestry[,c(1:4)], pheno, by = "ID")
+
+## 2.Merging with snp_dictionary* to match genotyping data: 
+sampleID_dict <- read.table("~/KoborLab/kobor_space/ppascualli/Files/CRELES/Admixture_Mapping/samplesDict_Hap2.txt",
+                            header = TRUE)
+sampleID_dict$IID <- gsub(".R2","-R2",sampleID_dict$IID, fixed = TRUE)
+
+annotation <- merge(covars, sampleID_dict, by.x = "ID", by.y = "IID")
+
+write.table(annotation, "~/KoborLab/kobor_space/ppascualli/Files/CRELES/Admixture_Mapping/CRELES_annDict_Hap2.txt",
+            col.names = TRUE, row.names = FALSE, quote = FALSE, sep = "\t")
+
+#### 3. Create an Annotation data.frame with GWASTools ---------------------
+# make ScanAnnotationDataFrame
+covars <- annotation[,2:7]
+ann <- covars[order(covars$scanID),]
+
+scanAnnot <- ScanAnnotationDataFrame(covars)
+scanAnnot
+#An object of class 'ScanAnnotationDataFrame'
+#scans: 1 2 ... 465 (465 total)
+#varLabels: gEUR gAFR ... scanID (6 total)
+#varMetadata: labelDescription
+
+saveRDS(scanAnnot, "~/KoborLab/kobor_space/ppascualli/Files/CRELES/Admixture_Mapping/CRELES_scanAnnot_Hap2.rds")
+```
+
+# 2. Loading genetic data
+
+Because we are gonna test LD blocks of ancestry rather than SNP data, we
+will use the local ancestry output which has the following information:
+chm,spos,epos,sgpos,egpos,n snps, sample.0 sample.1, …
+
+This information will be transformed to look like a genotype R matrix:
+snpID sample.0 sample.1 chm_pos AFR EUR
+
+```
+
+genotype <- read.table("~/KoborLab/kobor_space/ppascualli/Files/CRELES/Admixture_Mapping/CRELES_geno_matrix_explicit.txt",
+                        header = TRUE, sep = "\t")
+colnames(genotype) <- gsub("X", "", colnames(genotype))
+rownames(genotype) <- genotype$snpID
+genotype <- as.matrix(genotype[,1:932])
+
+
+n <- seq(1,932,2)
+## all .0 to .1 
+combined_geno <- paste(genotype[,n], genotype[,n+1], sep = "-")
+combined_geno <- matrix(combined_geno, ncol=466, byrow = FALSE)
+colnames(combined_geno) <- gsub(".1", "",colnames(genotype)[seq(2,932,2)],fixed = TRUE)
+combined_geno <- as.data.frame(combined_geno)
+combined_geno$snpID <- rownames(genotype)
+
+### Saving the matrix as a file: 
+write.table(combined_geno,
+            "~/KoborLab/kobor_space/ppascualli/Files/CRELES/Admixture_Mapping/CRELES_genotype_matrix_Hap2.txt", 
+            quote = F, row.names = F, col.names = T)
+
+
+#### NAT vs noNAT ---------------------------------------------------
+# AFR-AFR = 0
+# EUR-EUR = 0
+# EUR-AFR = 0
+# AFR-EUR = 0
+
+# EUR-AMR = 1
+# AMR-EUR = 1
+# AFR-AMR = 1
+# AMR-AFR = 1
+
+# AMR-AMR = 2
+
+perl -pe "s/EUR-AFR/0/g; s/AFR-EUR/0/g; s/EUR-EUR/0/g; s/AFR-AFR/0/g; \
+s/EUR-AMR/1/g; s/AMR-EUR/1/g; s/AFR-AMR/1/g; s/AMR-AFR/1/g; \
+s/AMR-AMR/2/g;" CRELES_genotype_matrix_Hap2.txt > CRELES_genoMat_Hap2_NAT.txt
+
+#### AFR vs noAFR---------------------------------------------------
+# EUR-EUR = 0
+# AMR-AMR = 0
+# EUR-AMR = 0
+# AMR-EUR = 0
+
+# AFR-AMR = 1
+# AMR-AFR = 1
+# EUR-AFR = 1
+# AFR-EUR = 1
+
+# AFR-AFR = 2
+
+perl -pe "s/EUR-EUR/0/g; s/AMR-AMR/0/g; s/EUR-AMR/0/g; s/AMR-EUR/0/g; \
+s/AFR-AMR/1/g; s/AMR-AFR/1/g; s/EUR-AFR/1/g; s/AFR-EUR/1/g; \
+s/AFR-AFR/2/g;" CRELES_genotype_matrix_Hap2.txt > CRELES_genoMat_Hap2_AFR.txt
+
+#### EUR vs noEUR---------------------------------------------------
+# AFR-AMR = 0
+# AMR-AFR = 0
+# AFR-AFR = 0
+# AMR-AMR = 0
+
+# EUR-AMR = 1
+# AMR-EUR = 1
+# EUR-AFR = 1
+# AFR-EUR = 1
+
+# EUR-EUR = 2
+
+perl -pe "s/AFR-AMR/0/g; s/AMR-AFR/0/g; s/AFR-AFR/0/g; s/AMR-AMR/0/g; \
+s/EUR-AMR/1/g; s/AMR-EUR/1/g; s/EUR-AFR/1/g; s/AFR-EUR/1/g; \
+s/EUR-EUR/2/g;" CRELES_genotype_matrix_Hap2.txt > CRELES_genoMat_Hap2_EUR.txt
+
+```
+
+## 2.1 Comparing NAT vs noNAT
+
+``` r
+### Loading Local ancestry inference: 
+geno <- read.table("~/KoborLab/kobor_space/ppascualli/Files/CRELES/Admixture_Mapping/CRELES_genoMat_Hap2_NAT.txt",
+                   header = TRUE)
+
+colnames(geno) <- gsub("X", "", colnames(geno))
+rownames(geno) <- geno$snpID
+geno <- as.matrix(geno[,1:466])
+
+#snpDict <- data.frame(chrSposEpos=rownames(geno), snpID=1:17730) 
+#write.table(snpDict, "~/KoborLab/kobor_space/ppascualli/Files/CRELES/Admixture_Mapping/snpDict_Hap2.txt",
+#            row.names = F, col.names = T, quote = F, sep = "\t")
+
+#sampleID_dict <- data.frame(IID=colnames(geno), scanID=paste0("77",1:466))
+#write.table(sampleID_dict, "~/KoborLab/kobor_space/ppascualli/Files/CRELES/Admixture_Mapping/samplesDict_Hap2.txt",
+#            row.names = F, col.names = T, quote = F, sep = "\t")
+
+
+snpDict <- read.table("~/KoborLab/kobor_space/ppascualli/Files/CRELES/Admixture_Mapping/snpDict_Hap2.txt",
+                      header = TRUE)
+sampleID_dict <- read.table("~/KoborLab/kobor_space/ppascualli/Files/CRELES/Admixture_Mapping/samplesDict_Hap2.txt",
+                            header = TRUE)
+
+rownames(geno) <- as.integer(snpDict$snpID)
+colnames(geno) <- as.integer(sampleID_dict$scanID)
+chr <- as.integer(unlist(strsplit(snpDict$chrSposEpos, "_"))[seq(1,53190,3)])
+endpos <- as.integer(unlist(strsplit(snpDict$chrSposEpos, "_"))[seq(2,53190,3)])
+
+### Re-rodering columns to they match the annotation file: 
+annotation <- readRDS("~/KoborLab/kobor_space/ppascualli/Files/CRELES/Admixture_Mapping/CRELES_scanAnnot_Hap2.rds")
+ann <- getScanID(annotation)
+
+geno <- geno[,as.character(ann)]
+scanID <- as.integer(colnames(geno))
+snpID <- as.integer(rownames(geno))
+
+genotype <- MatrixGenotypeReader(genotype = geno, snpID = snpID,
+                                 chromosome = chr, position = endpos, 
+                                 scanID = scanID)
+saveRDS(genotype, "~/KoborLab/kobor_space/ppascualli/Files/CRELES/Admixture_Mapping/CRELES_genoHap2_NATnoNAT.rds")
+```
+
+## 2.2 Comparing AFR vs noAFR
+
+``` r
+### Loading Local ancestry inference: 
+geno <- read.table("~/KoborLab/kobor_space/ppascualli/Files/CRELES/Admixture_Mapping/CRELES_genoMat_Hap2_AFR.txt",
+                   header = TRUE)
+
+colnames(geno) <- gsub("X", "", colnames(geno))
+rownames(geno) <- geno$snpID
+geno <- as.matrix(geno[,1:466])
+
+#snpDict <- data.frame(chrSposEpos=rownames(geno), snpID=1:17730) 
+#write.table(snpDict, "~/KoborLab/kobor_space/ppascualli/Files/CRELES/Admixture_Mapping/snpDict_Hap2.txt",
+#            row.names = F, col.names = T, quote = F, sep = "\t")
+
+#sampleID_dict <- data.frame(IID=colnames(geno), scanID=paste0("77",1:466))
+#write.table(sampleID_dict, "~/KoborLab/kobor_space/ppascualli/Files/CRELES/Admixture_Mapping/samplesDict_Hap2.txt",
+#            row.names = F, col.names = T, quote = F, sep = "\t")
+
+
+snpDict <- read.table("~/KoborLab/kobor_space/ppascualli/Files/CRELES/Admixture_Mapping/snpDict_Hap2.txt",
+                      header = TRUE)
+sampleID_dict <- read.table("~/KoborLab/kobor_space/ppascualli/Files/CRELES/Admixture_Mapping/samplesDict_Hap2.txt",
+                            header = TRUE)
+
+rownames(geno) <- as.integer(snpDict$snpID)
+colnames(geno) <- as.integer(sampleID_dict$scanID)
+chr <- as.integer(unlist(strsplit(snpDict$chrSposEpos, "_"))[seq(1,53190,3)])
+endpos <- as.integer(unlist(strsplit(snpDict$chrSposEpos, "_"))[seq(2,53190,3)])
+
+### Re-rodering columns to they match the annotation file: 
+annotation <- readRDS("~/KoborLab/kobor_space/ppascualli/Files/CRELES/Admixture_Mapping/CRELES_scanAnnot_Hap2.rds")
+ann <- getScanID(annotation)
+
+geno <- geno[,as.character(ann)]
+scanID <- as.integer(colnames(geno))
+snpID <- as.integer(rownames(geno))
+
+genotype <- MatrixGenotypeReader(genotype = geno, snpID = snpID,
+                                 chromosome = chr, position = endpos, 
+                                 scanID = scanID)
+saveRDS(genotype, "~/KoborLab/kobor_space/ppascualli/Files/CRELES/Admixture_Mapping/CRELES_genoHap2_AFRnoAFR.rds")
+```
+
+## 2.3 Comparing EUR vs noEUR
+
+``` r
+### Loading Local ancestry inference: 
+geno <- read.table("~/KoborLab/kobor_space/ppascualli/Files/CRELES/Admixture_Mapping/CRELES_genoMat_Hap2_EUR.txt",
+                   header = TRUE)
+
+colnames(geno) <- gsub("X", "", colnames(geno))
+rownames(geno) <- geno$snpID
+geno <- as.matrix(geno[,1:466])
+
+#snpDict <- data.frame(chrSposEpos=rownames(geno), snpID=1:17730) 
+#write.table(snpDict, "~/KoborLab/kobor_space/ppascualli/Files/CRELES/Admixture_Mapping/snpDict_Hap2.txt",
+#            row.names = F, col.names = T, quote = F, sep = "\t")
+
+#sampleID_dict <- data.frame(IID=colnames(geno), scanID=paste0("77",1:466))
+#write.table(sampleID_dict, "~/KoborLab/kobor_space/ppascualli/Files/CRELES/Admixture_Mapping/samplesDict_Hap2.txt",
+#            row.names = F, col.names = T, quote = F, sep = "\t")
+
+
+snpDict <- read.table("~/KoborLab/kobor_space/ppascualli/Files/CRELES/Admixture_Mapping/snpDict_Hap2.txt",
+                      header = TRUE)
+sampleID_dict <- read.table("~/KoborLab/kobor_space/ppascualli/Files/CRELES/Admixture_Mapping/samplesDict_Hap2.txt",
+                            header = TRUE)
+
+rownames(geno) <- as.integer(snpDict$snpID)
+colnames(geno) <- as.integer(sampleID_dict$scanID)
+chr <- as.integer(unlist(strsplit(snpDict$chrSposEpos, "_"))[seq(1,53190,3)])
+endpos <- as.integer(unlist(strsplit(snpDict$chrSposEpos, "_"))[seq(2,53190,3)])
+
+### Re-rodering columns to they match the annotation file: 
+annotation <- readRDS("~/KoborLab/kobor_space/ppascualli/Files/CRELES/Admixture_Mapping/CRELES_scanAnnot_Hap2.rds")
+ann <- getScanID(annotation)
+
+geno <- geno[,as.character(ann)]
+scanID <- as.integer(colnames(geno))
+snpID <- as.integer(rownames(geno))
+
+genotype <- MatrixGenotypeReader(genotype = geno, snpID = snpID,
+                                 chromosome = chr, position = endpos, 
+                                 scanID = scanID)
+saveRDS(genotype, "~/KoborLab/kobor_space/ppascualli/Files/CRELES/Admixture_Mapping/CRELES_genoHap2_EURnoEUR.rds")
+```
+
+# 3. Pair genetic and annotation data
+
+## 3.1 Comparing NAT vs notNAT
+
+``` r
+annotation <- readRDS("~/KoborLab/kobor_space/ppascualli/Files/CRELES/Admixture_Mapping/CRELES_scanAnnot_Hap2.rds")
+genotype <- readRDS("~/KoborLab/kobor_space/ppascualli/Files/CRELES/Admixture_Mapping/CRELES_genoHap2_NATnoNAT.rds")
+
+genoData <- GenotypeData(genotype, scanAnnot = annotation)
+
+saveRDS(genoData,"~/KoborLab/kobor_space/ppascualli/Files/CRELES/Admixture_Mapping/CRELES_genoData_NATnoNAT.rds")
+```
+
+## 3.2 Comparing AFR vs notAFR
+
+``` r
+annotation <- readRDS("~/KoborLab/kobor_space/ppascualli/Files/CRELES/Admixture_Mapping/CRELES_scanAnnot_Hap2.rds")
+genotype <- readRDS("~/KoborLab/kobor_space/ppascualli/Files/CRELES/Admixture_Mapping/CRELES_genoHap2_AFRnoAFR.rds")
+
+genoData <- GenotypeData(genotype, scanAnnot = annotation)
+
+saveRDS(genoData,"~/KoborLab/kobor_space/ppascualli/Files/CRELES/Admixture_Mapping/CRELES_genoData_AFRnoAFR.rds")
+```
+
+## 3.3 Comparing EUR vs noEUR
+
+``` r
+annotation <- readRDS("~/KoborLab/kobor_space/ppascualli/Files/CRELES/Admixture_Mapping/CRELES_scanAnnot_Hap2.rds")
+genotype <- readRDS("~/KoborLab/kobor_space/ppascualli/Files/CRELES/Admixture_Mapping/CRELES_genoHap2_EURnoEUR.rds")
+
+genoData <- GenotypeData(genotype, scanAnnot = annotation)
+
+saveRDS(genoData,"~/KoborLab/kobor_space/ppascualli/Files/CRELES/Admixture_Mapping/CRELES_genoData_EURnoEUR.rds")
+```
+
+# 4. PC-AiR
+
+We will conduct a PCA in Related Samples (PC-Air) to include in our AM
+analysis. CRELES samples have been already filtered to exclude
+individuals with high relatedness but there are some instances were 3rd
+degree family remains.
+
+``` r
+## Here I have copied the 3_XGMix_genotyping CRELES_LAI data before splitting it
+#cd ~/KoborLab/kobor_space/ppascualli/Files/CRELES/Admixture_Mapping/PC-Air
+
+####### --------------------- PC-Air ---------------------- ###########
+## Create a gds file from vcf file: 
+snpgdsVCF2GDS("~/KoborLab/kobor_space/ppascualli/Files/CRELES/Admixture_Mapping/CRELES_LAI_samples.vcf", 
+              "~/KoborLab/kobor_space/ppascualli/Files/CRELES/Admixture_Mapping/CRELES_hap2.gds",
+              method="biallelic.only")
+
+
+### LD prunning: ---------------------
+gds <- snpgdsOpen("~/KoborLab/kobor_space/ppascualli/Files/CRELES/Admixture_Mapping/CRELES_hap2.gds")
+snpset <- snpgdsLDpruning(gds, method="corr", slide.max.bp=10e6, 
+                          ld.threshold=sqrt(0.1), verbose=FALSE)
+pruned <- unlist(snpset, use.names=FALSE)
+length(pruned) ## 134990
+
+### Pairwise Measures of Ancestry Divergence: ---------------------
+ibd.robust <- snpgdsIBDKING(gds)
+KINGmat <- ibd.robust$kinship
+colnames(KINGmat) <- ibd.robust$sample.id
+rownames(KINGmat) <- ibd.robust$sample.id
+### Important! Close gds file
+snpgdsClose(gds)
+
+### Create a GenoData file: ---------------------
+## For the uncoded data (no ancestry inference, just genotypes)
+geno <- GdsGenotypeReader("~/KoborLab/kobor_space/ppascualli/Files/CRELES/Admixture_Mapping/CRELES_LAI_samples.gds")
+genoData <- GenotypeData(geno)
+
+### Run PC-Air --------------------------------------
+mypcair <- pcair(genoData, kinobj = KINGmat, divobj = KINGmat,
+                 snp.include = pruned)
+
+
+#### Run PC-Relate --------------------------------------
+genoData_iter <- GenotypeBlockIterator(genoData, snpInclude=pruned)
+getScanID(genoData)
+
+
+mypcrelate <- pcrelate(genoData_iter, pcs = mypcair$vectors[,1:2], 
+                       training.set = mypcair$unrels)
+
+
+# mypcrel contains Kinship Estimates from a previous PC-Relate analysis
+myGRM <- pcrelateToMatrix(mypcrelate)
+saveRDS(myGRM, "~/KoborLab/kobor_space/ppascualli/Files/CRELES/Admixture_Mapping/CRELES_myGRM_Hap2.rds")
+
+######## ----------------------------------------------
+myGRM <- readRDS("~/KoborLab/kobor_space/ppascualli/Files/CRELES/Admixture_Mapping/CRELES_myGRM_Hap2.rds")
+rownames(myGRM) <- gsub("-",  ".", rownames(myGRM), fixed = TRUE)
+colnames(myGRM) <- gsub("-",  ".", rownames(myGRM), fixed = TRUE)
+
+## Change ids to new ids
+sampleID_dict <- read.table("~/KoborLab/kobor_space/ppascualli/Files/CRELES/Admixture_Mapping/samplesDict_Hap2.txt",
+                            header = TRUE)
+
+GRM.cols <- myGRM[,as.character(sampleID_dict$IID)]
+myGRM <- GRM.cols[as.character(sampleID_dict$IID),]
+
+rownames(myGRM) <- sampleID_dict$scanID
+colnames(myGRM) <- sampleID_dict$scanID
+  
+  
+### Re-rodering columns to they match the annotation file: 
+annotation <- readRDS("~/KoborLab/kobor_space/ppascualli/Files/CRELES/Admixture_Mapping/CRELES_scanAnnot_Hap2.rds")
+ann <- getScanID(annotation)
+geno.col <- myGRM[,as.character(ann)]
+geno <- geno.col[as.character(ann),]
+saveRDS(geno, "~/KoborLab/kobor_space/ppascualli/Files/CRELES/Admixture_Mapping/CRELES_myGRM_Hap2_scanID.rds")
+```
+
+# 5. Mixed Model Association Testing
+
+## 5.0 Fit the null model:
+
+``` r
+###### --------- Fit the null model ---------##########
+myGRM <- readRDS("~/KoborLab/kobor_space/ppascualli/Files/CRELES/Admixture_Mapping/CRELES_myGRM_Hap2_scanID.rds")
+annotation <- readRDS("~/KoborLab/kobor_space/ppascualli/Files/CRELES/Admixture_Mapping/CRELES_scanAnnot_Hap2.rds")
+
+nullmod <- fitNullModel(annotation, outcome = "pheno", covars = c("gEUR", "gAFR", "sex"),
+                        cov.mat = myGRM, family = "binomial")
+```
+
+## 5.1 Comparing NAT vs notNAT
+
+``` r
+######--------- SNP-Phenotype association test ---------##########
+genoData <- readRDS("~/KoborLab/kobor_space/ppascualli/Files/CRELES/Admixture_Mapping/CRELES_genoData_NATnoNAT.rds")
+genoIterator <- GenotypeBlockIterator(genoData, snpBlock=5000)
+NATnoNAT_assoc <- assocTestSingle(genoIterator, null.model = nullmod)
+
+NATnoNAT_assoc$chr <- as.integer(NATnoNAT_assoc$chr)
+NATnoNAT_assoc$pos <- as.integer(NATnoNAT_assoc$pos)
+```
+
+## 5.2 Comparing AFR vs notAFR
+
+``` r
+######--------- SNP-Phenotype association test ---------##########
+genoData <- readRDS("~/KoborLab/kobor_space/ppascualli/Files/CRELES/Admixture_Mapping/CRELES_genoData_AFRnoAFR.rds")
+genoIterator <- GenotypeBlockIterator(genoData, snpBlock=5000)
+AFRnoAFR_assoc <- assocTestSingle(genoIterator, null.model = nullmod)
+AFRnoAFR_assoc$chr <- as.integer(AFRnoAFR_assoc$chr)
+AFRnoAFR_assoc$pos <- as.integer(AFRnoAFR_assoc$pos)
+```
+
+## 5.3 Comparing EUR vs noEUR
+
+``` r
+######--------- SNP-Phenotype association test ---------##########
+genoData <- readRDS("~/KoborLab/kobor_space/ppascualli/Files/CRELES/Admixture_Mapping/CRELES_genoData_EURnoEUR.rds")
+genoIterator <- GenotypeBlockIterator(genoData, snpBlock=5000)
+EURnoEUR_assoc <- assocTestSingle(genoIterator, null.model = nullmod)
+EURnoEUR_assoc$chr <- as.integer(EURnoEUR_assoc$chr)
+EURnoEUR_assoc$pos <- as.integer(EURnoEUR_assoc$pos)
+```
+
+# 6. Finding patterns of significance
+
+## 6.0 Combining results
+
+``` r
+## Saving the complete information ---
+EURnoEUR_assoc$ancestry <- "EUR"
+AFRnoAFR_assoc$ancestry <- "AFR"
+NATnoNAT_assoc$ancestry <- "NAT"
+
+AM_results <- rbind(rbind(EURnoEUR_assoc, AFRnoAFR_assoc), NATnoNAT_assoc)
+write.table(AM_results, "~/KoborLab/kobor_space/ppascualli/Files/CRELES/Admixture_Mapping/admixtureMapping_results_sexAdj_complete.txt",
+            quote = F, row.names = F, col.names = T)
+
+
+
+## Loading files: -----------
+
+## Saving a complete file with the results for future reference: 
+snpDict <- read.table("~/KoborLab/kobor_space/ppascualli/Files/CRELES/Admixture_Mapping/snpDict_Hap2.txt", header = T)
+admixtureMap <- merge(snpDict, AM_results, by.x = "snpID", by.y = "variant.id")
+
+admixtureMap$chr <- (unlist(strsplit(admixtureMap$chrSposEpos, "_")))[seq(1,159568,3)]
+admixtureMap$spos <- (unlist(strsplit(admixtureMap$chrSposEpos, "_")))[seq(2,159569,3)]
+admixtureMap$epos <- (unlist(strsplit(admixtureMap$chrSposEpos, "_")))[seq(3,159570,3)]
+admixtureMap <- admixtureMap[,c(1,3,8,11,15:17)]
+write.table(admixtureMap, file = "~/KoborLab/kobor_space/ppascualli/Files/CRELES/Admixture_Mapping/admixtureMapping_results_sexAdj_all_information.txt", 
+            quote = F, row.names = F, col.names = T, sep = "\t")
+
+write.table(admixtureMap %>% filter(admixtureMap$Score.pval < 0.001), file = "~/KoborLab/kobor_space/ppascualli/Files/CRELES/Admixture_Mapping/admixtureMapping_results_sexAdj_sugSig.txt", 
+            quote = F, row.names = F, col.names = T, sep = "\t")
+```
+
+## 6.1 SNPs within ancestry windows
+
+``` bash
+
+## Creating a list of ancestry windows: {r} ----------------------------------
+
+admixtureMap <- read.table("~/KoborLab/kobor_space/ppascualli/Files/CRELES/Admixture_Mapping/admixtureMapping_results_sexAdj_complete.txt", header = TRUE)
+snpDict <- read.table("~/KoborLab/kobor_space/ppascualli/Files/CRELES/Admixture_Mapping/snpDict_Hap2.txt", header = T)
+admixtureMap <- merge(admixtureMap,snpDict,by.x = "variant.id", by.y = "snpID")
+
+admixtureMap$chr <- unlist(strsplit(admixtureMap$chrSposEpos, "_"))[seq(1, 159570, 3)]
+admixtureMap$spos <- unlist(strsplit(admixtureMap$chrSposEpos, "_"))[seq(2, 159570, 3)]
+admixtureMap$epos <- unlist(strsplit(admixtureMap$chrSposEpos, "_"))[seq(3, 159570, 3)]
+
+admixtureMap<- admixtureMap %>% filter(Score.pval < 0.001)
+write.table(admixtureMap[,c(2,17,18,14)], file="~/KoborLab/kobor_space/ppascualli/Files/CRELES/Admixture_Mapping/ancestryWindows.txt",
+            col.names =T, row.names = F, quote = F, sep = ",")
+
+
+
+#### ------------------------------------------------------------
+# Downloading SNP database: 
+wget http://hgdownload.soe.ucsc.edu/gbdb/hg19/snp/dbSnp153.bb
+
+
+### On Genome Browser: https://genome.ucsc.edu/cgi-bin/hgTables
+# download one table per window with the genes embedded in it 
+
+## Using biomart to translate the RefSeq names of the output files from GenomeBrowser:
+# first we needed to get rid of the .# hence: 
+# cut -f4 chr22_197676040_EUR | cut -f1 -d '.' > names
+# paste chr22_197676040_EUR names > chr22_197676040_EUR_new
+
+# then, on R we proceded to load that file and use biomart to get the gene name
+chr22 <- read.table("/Users/paola.arguello/Documents/GitHub/Longevity-Ancestry/Admixture_Mapping/AncestryWindowsGenes/chr22_197676040_EUR_new", header = F)
+
+ensembl <- useDataset(dataset = "hsapiens_gene_ensembl", mart = ensembl)
+
+listAttributes(ensembl)
+genes <- getBM(attributes = c('external_gene_name', 'refseq_mrna'),
+      filters = 'refseq_mrna',
+      values = chr22$V5, 
+      mart = ensembl)
+
+chr22_new <- merge(chr22, genes, by.x = "V5", by.y = "refseq_mrna")
+write.table(chr22_new, "/Users/paola.arguello/Documents/GitHub/Longevity-Ancestry/Admixture_Mapping/AncestryWindowsGenes/chr22_197676040_EUR_new",
+            row.names = F, col.names = F, quote = F, sep = "\t")
+```
